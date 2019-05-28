@@ -2,7 +2,7 @@ import React, { Component } from "react";
 import PropTypes from "prop-types";
 import ReactDOM from "react-dom";
 import S from "./ExpressionEditorTextfield.css";
-import { t } from "c-3po";
+import { t } from "ttag";
 import _ from "underscore";
 import cx from "classnames";
 
@@ -26,6 +26,14 @@ import { isExpression } from "metabase/lib/expressions";
 
 const MAX_SUGGESTIONS = 30;
 
+const SUGGESTION_SECTION_NAMES = {
+  fields: t`Fields`,
+  aggregations: t`Aggregations`,
+  operators: t`Operators`,
+  metrics: t`Metrics`,
+  other: t`Other`,
+};
+
 export default class ExpressionEditorTextfield extends Component {
   constructor(props, context) {
     super(props, context);
@@ -46,6 +54,7 @@ export default class ExpressionEditorTextfield extends Component {
     onChange: PropTypes.func.isRequired,
     onError: PropTypes.func.isRequired,
     startRule: PropTypes.string.isRequired,
+    className: PropTypes.string,
   };
 
   static defaultProps = {
@@ -267,16 +276,22 @@ export default class ExpressionEditorTextfield extends Component {
       errorMessage = t`unknown error`;
     }
 
-    const { placeholder } = this.props;
+    const { placeholder, className, style } = this.props;
     const { suggestions, showAll } = this.state;
 
     return (
       <div className={cx(S.editor, "relative")}>
         <TokenizedInput
           ref="input"
-          className={cx(S.input, "my1 input block full", {
-            "border-error": errorMessage,
-          })}
+          style={style}
+          className={cx(
+            S.input,
+            "my1 input block full",
+            {
+              "border-error": errorMessage,
+            },
+            className,
+          )}
           type="text"
           placeholder={placeholder}
           value={this.state.expressionString}
@@ -316,7 +331,8 @@ export default class ExpressionEditorTextfield extends Component {
                       ref={"header-" + i}
                       className="mx2 h6 text-uppercase text-bold text-medium py1 pt2"
                     >
-                      {suggestion.type}
+                      {SUGGESTION_SECTION_NAMES[suggestion.type] ||
+                        suggestion.type}
                     </li>
                   ),
                   <li
@@ -351,16 +367,15 @@ export default class ExpressionEditorTextfield extends Component {
                   </li>,
                 ],
               )}
-              {!showAll &&
-                suggestions.length >= MAX_SUGGESTIONS && (
-                  <li
-                    style={{ paddingTop: 5, paddingBottom: 5 }}
-                    onMouseDownCapture={e => this.onShowMoreMouseDown(e)}
-                    className="px2 text-italic text-medium cursor-pointer text-brand-hover"
-                  >
-                    and {suggestions.length - MAX_SUGGESTIONS} more
-                  </li>
-                )}
+              {!showAll && suggestions.length >= MAX_SUGGESTIONS && (
+                <li
+                  style={{ paddingTop: 5, paddingBottom: 5 }}
+                  onMouseDownCapture={e => this.onShowMoreMouseDown(e)}
+                  className="px2 text-italic text-medium cursor-pointer text-brand-hover"
+                >
+                  and {suggestions.length - MAX_SUGGESTIONS} more
+                </li>
+              )}
             </ul>
           </Popover>
         ) : null}

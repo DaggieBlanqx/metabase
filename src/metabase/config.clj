@@ -2,13 +2,13 @@
   (:require [clojure.java
              [io :as io]
              [shell :as shell]]
-            [clojure.string :as s]
+            [clojure.string :as str]
             [environ.core :as environ])
   (:import clojure.lang.Keyword))
 
 (def ^Boolean is-windows?
   "Are we running on a Windows machine?"
-  (s/includes? (s/lower-case (System/getProperty "os.name")) "win"))
+  (str/includes? (str/lower-case (System/getProperty "os.name")) "win"))
 
 (def ^:private app-defaults
   "Global application defaults"
@@ -54,15 +54,18 @@
 (def ^Boolean is-prod? "Are we running in `prod` mode (i.e. from a JAR)?"                         (= :prod (config-kw :mb-run-mode)))
 (def ^Boolean is-test? "Are we running in `test` mode (i.e. via `lein test`)?"                    (= :test (config-kw :mb-run-mode)))
 
-
 ;;; Version stuff
 ;; Metabase version is of the format `GIT-TAG (GIT-SHORT-HASH GIT-BRANCH)`
 
 (defn- version-info-from-shell-script []
   (try
-    (let [[tag hash branch date] (-> (shell/sh "./bin/version") :out s/trim (s/split #" "))]
-      {:tag tag, :hash hash, :branch branch, :date date})
-    ;; if ./bin/version fails (e.g., if we are developing on Windows) just return something so the whole thing doesn't barf
+    (let [[tag hash branch date] (-> (shell/sh "./bin/version") :out str/trim (str/split #" "))]
+      {:tag    (or tag "?")
+       :hash   (or hash "?")
+       :branch (or branch "?")
+       :date   (or date "?")})
+    ;; if ./bin/version fails (e.g., if we are developing on Windows) just return something so the whole thing doesn't
+    ;; barf
     (catch Throwable _
       {:tag "?", :hash "?", :branch "?", :date "?"})))
 
@@ -79,9 +82,11 @@
    This comes from `resources/version.properties` for prod builds and is fetched from `git` via the `./bin/version` script for dev.
 
      mb-version-info -> {:tag: \"v0.11.1\", :hash: \"afdf863\", :branch: \"about_metabase\", :date: \"2015-10-05\"}"
-  (if is-prod?
-    (version-info-from-properties-file)
-    (version-info-from-shell-script)))
+  (or (if is-prod?
+        (version-info-from-properties-file)
+        (version-info-from-shell-script))
+      ;; if version info is not defined for whatever reason
+      {}))
 
 (def ^String mb-version-string
   "A formatted version string representing the currently running application.

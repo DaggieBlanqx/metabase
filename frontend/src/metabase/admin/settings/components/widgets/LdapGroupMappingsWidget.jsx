@@ -11,7 +11,7 @@ import Icon from "metabase/components/Icon";
 import LoadingSpinner from "metabase/components/LoadingSpinner";
 import Modal from "metabase/components/Modal";
 import PopoverWithTrigger from "metabase/components/PopoverWithTrigger";
-import { t } from "c-3po";
+import { t } from "ttag";
 import { PermissionsApi, SettingsApi } from "metabase/services";
 
 import _ from "underscore";
@@ -46,10 +46,14 @@ export default class LdapGroupMappingsWidget extends React.Component {
     };
   }
 
-  _showEditModal = (e: Event) => {
+  _showEditModal = async (e: Event) => {
     e.preventDefault();
+    // just load the setting again to make sure it's up to date
+    const setting = _.findWhere(await SettingsApi.list(), {
+      key: "ldap-group-mappings",
+    });
     this.setState({
-      mappings: this.props.settingValues["ldap-group-mappings"] || {},
+      mappings: (setting && setting.value) || {},
       showEditModal: true,
     });
     PermissionsApi.groups().then(groups => this.setState({ groups }));
@@ -106,7 +110,10 @@ export default class LdapGroupMappingsWidget extends React.Component {
 
   _saveClick = (e: Event) => {
     e.preventDefault();
-    const { state: { mappings }, props: { onChangeSetting } } = this;
+    const {
+      state: { mappings },
+      props: { onChangeSetting },
+    } = this;
     SettingsApi.put({ key: "ldap-group-mappings", value: mappings }).then(
       () => {
         onChangeSetting("ldap-group-mappings", mappings);

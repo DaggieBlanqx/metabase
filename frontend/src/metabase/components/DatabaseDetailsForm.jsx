@@ -1,7 +1,7 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
 import cx from "classnames";
-import { t, jt } from "c-3po";
+import { t, jt } from "ttag";
 import FormField from "metabase/components/form/FormField.jsx";
 import FormLabel from "metabase/components/form/FormLabel.jsx";
 import FormMessage from "metabase/components/form/FormMessage.jsx";
@@ -226,6 +226,30 @@ export default class DatabaseDetailsForm extends Component {
     } else if (isTunnelField(field) && !this.state.details["tunnel-enabled"]) {
       // don't show tunnel fields if tunnel isn't enabled
       return null;
+    } else if (field.name === "use-jvm-timezone") {
+      let on =
+        this.state.details["use-jvm-timezone"] == undefined
+          ? false
+          : this.state.details["use-jvm-timezone"];
+      return (
+        <FormField key={field.name} fieldName={field.name}>
+          <div className="flex align-center Form-offset">
+            <div className="Grid-cell--top">
+              <Toggle
+                value={on}
+                onChange={val => this.onChange("use-jvm-timezone", val)}
+              />
+            </div>
+            <div className="px2">
+              <h3>{t`Use the Java Virtual Machine (JVM) timezone`}</h3>
+              <div style={{ maxWidth: "40rem" }} className="pt1">
+                {t`We suggest you leave this off unless you're doing manual timezone casting in
+                                many or most of your queries with this data.`}
+              </div>
+            </div>
+          </div>
+        </FormField>
+      );
     } else if (field.name === "let-user-control-scheduling") {
       let on =
         this.state.details["let-user-control-scheduling"] == undefined
@@ -243,8 +267,7 @@ export default class DatabaseDetailsForm extends Component {
               />
             </div>
             <div className="px2">
-              <h3
-              >{t`This is a large database, so let me choose when Metabase syncs and scans`}</h3>
+              <h3>{t`This is a large database, so let me choose when Metabase syncs and scans`}</h3>
               <div style={{ maxWidth: "40rem" }} className="pt1">
                 {t`By default, Metabase does a lightweight hourly sync and an intensive daily scan of field values.
                                 If you have a large database, we recommend turning this on and reviewing when and how often the field value scans happen.`}
@@ -263,7 +286,7 @@ export default class DatabaseDetailsForm extends Component {
         <div className="flex align-center Form-offset">
           <div className="Grid-cell--top">
             {jt`${(
-              <a href={credentialsURL} target="_blank">
+              <a className="link" href={credentialsURL} target="_blank">
                 {t`Click here`}
               </a>
             )} to generate a Client ID and Client Secret for your project.`}
@@ -290,7 +313,7 @@ export default class DatabaseDetailsForm extends Component {
           <div className="flex align-center Form-offset">
             <div className="Grid-cell--top">
               {jt`${(
-                <a href={authURL} target="_blank">
+                <a className="link" href={authURL} target="_blank">
                   {t`Click here`}
                 </a>
               )} to get an auth code`}
@@ -301,7 +324,8 @@ export default class DatabaseDetailsForm extends Component {
                   <a
                     href={AUTH_URL_PREFIXES["bigquery_with_drive"] + clientID}
                     target="_blank"
-                  >{t`with Google Drive permissions`}</a>)
+                  >{t`with Google Drive permissions`}</a>
+                  )
                 </span>
               )}
             </div>
@@ -400,7 +424,9 @@ export default class DatabaseDetailsForm extends Component {
           >
             {submitting
               ? t`Saving...`
-              : willProceedToNextDbCreationStep ? t`Next` : submitButtonText}
+              : willProceedToNextDbCreationStep
+              ? t`Next`
+              : submitButtonText}
           </button>
           <FormMessage formError={formError} formSuccess={formSuccess} />
         </div>

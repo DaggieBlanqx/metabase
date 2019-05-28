@@ -23,7 +23,7 @@ import "ace/snippets/mysql";
 import "ace/snippets/pgsql";
 import "ace/snippets/sqlserver";
 import "ace/snippets/json";
-import { t } from "c-3po";
+import { t } from "ttag";
 
 import { SQLBehaviour } from "metabase/lib/ace/sql_behaviour";
 
@@ -62,6 +62,8 @@ type Props = {
 
   question: Question,
   query: NativeQuery,
+
+  handleResize: () => void,
 
   runQuestionQuery: (options?: RunQueryParams) => void,
   setDatasetQuery: (datasetQuery: DatasetQuery) => void,
@@ -278,6 +280,13 @@ export default class NativeQueryEditor extends Component {
     }
   };
 
+  setParameterIndex = (parameterId: ParameterId, parameterIndex: number) => {
+    const { query, setDatasetQuery } = this.props;
+    query
+      .setParameterIndex(parameterId, parameterIndex)
+      .update(setDatasetQuery);
+  };
+
   render() {
     const { query, setParameterValue, location } = this.props;
     const database = query.database();
@@ -363,7 +372,9 @@ export default class NativeQueryEditor extends Component {
               parameters={parameters}
               query={location.query}
               setParameterValue={setParameterValue}
+              setParameterIndex={this.setParameterIndex}
               syncQueryString
+              isEditing
               isQB
               commitImmediately
             />
@@ -382,6 +393,7 @@ export default class NativeQueryEditor extends Component {
             minConstraints={[Infinity, getEditorLineHeight(MIN_HEIGHT_LINES)]}
             axis="y"
             onResizeStop={(e, data) => {
+              this.props.handleResize();
               this._editor.resize();
             }}
           >

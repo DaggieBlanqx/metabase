@@ -2,14 +2,13 @@ import React, { Component } from "react";
 import PropTypes from "prop-types";
 import { Box } from "grid-styled";
 
-import { t } from "c-3po";
+import { t } from "ttag";
 import _ from "underscore";
 import { capitalize } from "metabase/lib/formatting";
 
 import MetabaseSettings from "metabase/lib/settings";
 import * as Urls from "metabase/lib/urls";
 import Modal from "metabase/components/Modal";
-import Logs from "metabase/components/Logs";
 
 import LogoIcon from "metabase/components/LogoIcon";
 import EntityMenu from "metabase/components/EntityMenu";
@@ -35,6 +34,7 @@ export default class ProfileLink extends Component {
   };
 
   generateOptionsForUser = () => {
+    const { tag } = MetabaseSettings.get("version");
     const admin = this.props.user.is_superuser;
     const adminContext = this.props.context === "admin";
     return [
@@ -42,30 +42,36 @@ export default class ProfileLink extends Component {
         title: t`Account settings`,
         icon: null,
         link: Urls.accountSettings(),
+        event: `Navbar;Profile Dropdown;Edit Profile`,
       },
       ...(admin && [
         {
           title: adminContext ? t`Exit admin` : t`Admin`,
           icon: null,
           link: adminContext ? "/" : "/admin",
+          event: `Navbar;Profile Dropdown;${
+            adminContext ? "Exit Admin" : "Enter Admin"
+          }`,
         },
       ]),
-      ...(admin && [
-        {
-          title: t`Logs`,
-          icon: null,
-          action: () => this.openModal("logs"),
-        },
-      ]),
+      {
+        title: t`Help`,
+        icon: null,
+        link: MetabaseSettings.docsUrl(),
+        externalLink: true,
+        event: `Navbar;Profile Dropdown;About ${tag}`,
+      },
       {
         title: t`About Metabase`,
         icon: null,
         action: () => this.openModal("about"),
+        event: `Navbar;Profile Dropdown;About ${tag}`,
       },
       {
         title: t`Sign out`,
         icon: null,
         link: "auth/logout",
+        event: `Navbar;Profile Dropdown;Logout`,
       },
     ];
   };
@@ -75,7 +81,11 @@ export default class ProfileLink extends Component {
     const { tag, date, ...versionExtra } = MetabaseSettings.get("version");
     return (
       <Box>
-        <EntityMenu items={this.generateOptionsForUser()} triggerIcon="gear" />
+        <EntityMenu
+          tooltip={t`Settings`}
+          items={this.generateOptionsForUser()}
+          triggerIcon="gear"
+        />
         {modalOpen === "about" ? (
           <Modal small onClose={this.closeModal}>
             <div className="px4 pt4 pb2 text-centered relative">
@@ -113,10 +123,6 @@ export default class ProfileLink extends Component {
               </span>
               <span>{t`and is built with care in San Francisco, CA`}</span>
             </div>
-          </Modal>
-        ) : modalOpen === "logs" ? (
-          <Modal wide onClose={this.closeModal}>
-            <Logs onClose={this.closeModal} />
           </Modal>
         ) : null}
       </Box>

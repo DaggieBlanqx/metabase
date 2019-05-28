@@ -1,7 +1,7 @@
 /* @flow */
 
 import React, { Component } from "react";
-import { t } from "c-3po";
+import { t } from "ttag";
 import {
   MinRowsError,
   ChartSettingsError,
@@ -9,11 +9,12 @@ import {
 
 import { formatValue } from "metabase/lib/formatting";
 
+import { getComputedSettingsForSeries } from "metabase/visualizations/lib/settings/visualization";
 import {
-  getSettings,
   metricSetting,
   dimensionSetting,
-} from "metabase/visualizations/lib/settings";
+} from "metabase/visualizations/lib/settings/utils";
+import { columnSettings } from "metabase/visualizations/lib/settings/column";
 
 import FunnelNormal from "../components/FunnelNormal";
 import FunnelBar from "../components/FunnelBar";
@@ -44,7 +45,11 @@ export default class Funnel extends Component {
   }
 
   static checkRenderable(series, settings) {
-    const [{ data: { rows } }] = series;
+    const [
+      {
+        data: { rows },
+      },
+    ] = series;
     if (series.length > 1) {
       return;
     }
@@ -55,30 +60,31 @@ export default class Funnel extends Component {
     if (!settings["funnel.dimension"] || !settings["funnel.metric"]) {
       throw new ChartSettingsError(
         t`Which fields do you want to use?`,
-        t`Data`,
+        { section: t`Data` },
         t`Choose fields`,
       );
     }
   }
 
   static settings = {
-    "funnel.dimension": {
-      section: "Data",
+    ...columnSettings({ hidden: true }),
+    ...dimensionSetting("funnel.dimension", {
+      section: t`Data`,
       title: t`Step`,
-      ...dimensionSetting("funnel.dimension"),
       dashboard: false,
       useRawSeries: true,
-    },
-    "funnel.metric": {
-      section: "Data",
+      showColumnSetting: true,
+    }),
+    ...metricSetting("funnel.metric", {
+      section: t`Data`,
       title: t`Measure`,
-      ...metricSetting("funnel.metric"),
       dashboard: false,
       useRawSeries: true,
-    },
+      showColumnSetting: true,
+    }),
     "funnel.type": {
       title: t`Funnel type`,
-      section: "Display",
+      section: t`Display`,
       widget: "select",
       props: {
         options: [
@@ -93,9 +99,14 @@ export default class Funnel extends Component {
   };
 
   static transformSeries(series) {
-    let [{ card, data: { rows, cols } }] = series;
+    let [
+      {
+        card,
+        data: { rows, cols },
+      },
+    ] = series;
 
-    const settings = getSettings(series);
+    const settings = getComputedSettingsForSeries(series);
 
     const dimensionIndex = _.findIndex(
       cols,

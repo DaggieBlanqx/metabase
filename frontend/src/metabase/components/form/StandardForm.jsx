@@ -6,6 +6,7 @@ import FormMessage from "metabase/components/form/FormMessage";
 
 import Button from "metabase/components/Button";
 
+import { t } from "ttag";
 import cx from "classnames";
 import { getIn } from "icepick";
 
@@ -19,15 +20,17 @@ const StandardForm = ({
   handleSubmit,
   resetForm,
 
+  submitTitle,
   formDef: form,
   className,
   resetButton = false,
   newForm = true,
+  onClose = null,
 
   ...props
 }) => (
   <form onSubmit={handleSubmit} className={cx(className, { NewForm: newForm })}>
-    <div className="m1">
+    <div>
       {form.fields(values).map(formField => {
         const nameComponents = formField.name.split(".");
         const field = getIn(fields, nameComponents);
@@ -47,25 +50,34 @@ const StandardForm = ({
         );
       })}
     </div>
-    <div className={cx("m1", { "Form-offset": !newForm })}>
-      <Button
-        type="submit"
-        primary
-        disabled={submitting || invalid}
-        className="mr1"
-      >
-        {values.id != null ? "Update" : "Create"}
-      </Button>
-      {resetButton && (
+    <div className={cx("flex", { "Form-offset": !newForm })}>
+      <div className="ml-auto flex align-center">
+        {error && <FormMessage message={error} formError />}
+        {onClose && (
+          <Button
+            type="button"
+            className="mr1"
+            onClick={onClose}
+          >{t`Cancel`}</Button>
+        )}
         <Button
-          type="button"
-          disabled={submitting || !dirty}
-          onClick={resetForm}
+          type="submit"
+          primary={!(submitting || invalid)}
+          disabled={submitting || invalid}
         >
-          Reset
+          {submitTitle || (values.id != null ? t`Update` : t`Create`)}
         </Button>
-      )}
-      {error && <FormMessage message={error} formError />}
+        {resetButton && (
+          <Button
+            type="button"
+            disabled={submitting || !dirty}
+            onClick={resetForm}
+            className="ml1"
+          >
+            {t`Reset`}
+          </Button>
+        )}
+      </div>
     </div>
   </form>
 );

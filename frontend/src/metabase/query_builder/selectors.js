@@ -5,7 +5,7 @@ import _ from "underscore";
 // eslint-disable-next-line no-unused-vars
 import Visualization from "metabase/visualizations/components/Visualization";
 
-import { getSettings as _getVisualizationSettings } from "metabase/visualizations/lib/settings";
+import { getComputedSettingsForSeries } from "metabase/visualizations/lib/settings/visualization";
 
 import { getParametersWithExtras } from "metabase/meta/Card";
 
@@ -55,8 +55,9 @@ export const getDatabaseId = createSelector(
   card => card && card.dataset_query && card.dataset_query.database,
 );
 
-export const getTableId = createSelector([getCard], card =>
-  getIn(card, ["dataset_query", "query", "source_table"]),
+export const getTableId = createSelector(
+  [getCard],
+  card => getIn(card, ["dataset_query", "query", "source-table"]),
 );
 
 export const getTableForeignKeys = state => state.qb.tableForeignKeys;
@@ -101,7 +102,7 @@ export const getDatabaseFields = createSelector(
   (databaseId, databaseFields) => databaseFields[databaseId],
 );
 
-import { getMode as getMode_ } from "metabase/qb/lib/modes";
+import { getMode as getMode_ } from "metabase/modes/lib/modes";
 import { getAlerts } from "metabase/alert/selectors";
 import {
   extractRemappings,
@@ -144,8 +145,10 @@ const getLastRunParameterValues = createSelector(
   [getLastRunParameters],
   parameters => parameters.map(parameter => parameter.value),
 );
-const getNextRunParameterValues = createSelector([getParameters], parameters =>
-  parameters.map(parameter => parameter.value).filter(p => p !== undefined),
+const getNextRunParameterValues = createSelector(
+  [getParameters],
+  parameters =>
+    parameters.map(parameter => parameter.value).filter(p => p !== undefined),
 );
 
 export const getIsResultDirty = createSelector(
@@ -250,5 +253,5 @@ export const getTransformedSeries = createSelector(
  */
 export const getVisualizationSettings = createSelector(
   [getTransformedSeries],
-  series => series && _getVisualizationSettings(series),
+  series => series && getComputedSettingsForSeries(series),
 );

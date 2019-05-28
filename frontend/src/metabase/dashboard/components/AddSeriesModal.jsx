@@ -1,6 +1,6 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
-import { t } from "c-3po";
+import { t } from "ttag";
 
 import Visualization from "metabase/visualizations/components/Visualization.jsx";
 import LoadingAndErrorWrapper from "metabase/components/LoadingAndErrorWrapper.jsx";
@@ -26,7 +26,7 @@ function getQueryColumns(card, databases) {
   let table =
     databases &&
     databases[dbId] &&
-    databases[dbId].tables_lookup[query.source_table];
+    databases[dbId].tables_lookup[query["source-table"]];
   if (!table) {
     return null;
   }

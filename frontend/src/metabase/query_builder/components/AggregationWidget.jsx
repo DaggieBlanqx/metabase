@@ -1,6 +1,6 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
-import { t } from "c-3po";
+import { t } from "ttag";
 import AggregationPopover from "./AggregationPopover.jsx";
 import FieldName from "./FieldName.jsx";
 import Clearable from "./Clearable.jsx";
@@ -127,13 +127,16 @@ export default class AggregationWidget extends Component {
   render() {
     const { aggregation, addButton, name } = this.props;
     if (aggregation && aggregation.length > 0) {
-      let aggregationName = NamedClause.isNamed(aggregation)
-        ? NamedClause.getName(aggregation)
-        : AggregationClause.isCustom(aggregation)
+      let aggregationName;
+      try {
+        aggregationName = NamedClause.isNamed(aggregation)
+          ? NamedClause.getName(aggregation)
+          : AggregationClause.isCustom(aggregation)
           ? this.renderCustomAggregation()
           : AggregationClause.isMetric(aggregation)
-            ? this.renderMetricAggregation()
-            : this.renderStandardAggregation();
+          ? this.renderMetricAggregation()
+          : this.renderStandardAggregation();
+      } catch (e) {}
 
       return (
         <div
@@ -151,7 +154,9 @@ export default class AggregationWidget extends Component {
                 <span className="View-section-aggregation QueryOption py1 mx1">
                   {aggregationName == null
                     ? t`Choose an aggregation`
-                    : name ? name : aggregationName}
+                    : name
+                    ? name
+                    : aggregationName}
                 </span>
               </div>
             </Clearable>

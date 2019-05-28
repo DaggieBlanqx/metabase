@@ -312,6 +312,11 @@ export const I18NApi = {
   locale: GET("/app/locales/:locale.json"),
 };
 
+export const TaskApi = {
+  get: GET("/api/task"),
+  getJobsInfo: GET("/api/task/info"),
+};
+
 export function setPublicQuestionEndpoints(uuid: string) {
   setFieldEndpoints("/api/public/card/:uuid", { uuid });
 }

@@ -1,10 +1,10 @@
 
 ## Managing Databases
-If you already connected your database during the installation, you’ve probably a covered a lot of this info. But if you need to add another database or manage the settings of the one you already have connected, just click the circle with your initials in the top right of Metabase and select the **Admin Panel**.
+If you already connected your database during the installation, you’ve probably a covered a lot of this territory. But if you need to add another database or manage the settings of one you've already have connected, just click the settings icon in the top right of Metabase and select **Admin**.
 
 ![profiledropdown](images/ProfileDropdown.png)
 
-Cool, now you’re in the admin panel. Next, select **Databases** from the menu bar at the top of the screen to see your databases.
+Cool, now you’re in the administration section of Metabase. Next, select **Databases** from the menu bar at the top of the screen to see your databases.
 
 ### Adding a Database Connection
 
@@ -13,18 +13,18 @@ Now you’ll see a list of your databases. To connect another database to Metaba
 * Amazon Redshift
 * [Google BigQuery](databases/bigquery.md)
 * H2
-* MongoDB (version 3.0 or higher)
+* MongoDB (version 3.4 or higher)
 * MySQL (version 4.1 or higher, as well as MariaDB)
 * Postgres
 * SQLite
 * SQL Server
 * Druid
-* [CrateDB](databases/cratedb.md)
 * [Oracle](databases/oracle.md)
 * [Vertica](databases/vertica.md)
 * Presto
 * Google Analytics
-* [SparkSQL](databases/spark.md)
+* SparkSQL
+* Snowflake
 
 To add a database, you'll need its connection information.
 

@@ -2,7 +2,7 @@
   "Tests for the logic that syncs Field models with the Metadata fetched from a DB. (There are more tests for this
   behavior in the namespace `metabase.sync-database.sync-dynamic-test`, which is sort of a misnomer.)"
   (:require [clojure.java.jdbc :as jdbc]
-            [expectations :refer :all]
+            [expectations :refer [expect]]
             [metabase
              [query-processor :as qp]
              [sync :as sync]
@@ -11,6 +11,7 @@
              [database :refer [Database]]
              [field :refer [Field]]
              [table :refer [Table]]]
+            [metabase.sync.sync-metadata.fields.sync-instances :as sync-fields.sync-instances]
             [metabase.sync.util-test :as sut]
             [metabase.test
              [data :as data]
@@ -18,8 +19,7 @@
             [metabase.test.data.one-off-dbs :as one-off-dbs]
             [toucan
              [db :as db]
-             [hydrate :refer [hydrate]]]
-            [toucan.util.test :as tt]))
+             [hydrate :refer [hydrate]]]))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                         Dropping & Undropping Columns                                          |
@@ -153,26 +153,34 @@
   (db/select-one-field :fk_target_field_id Field, :id (data/id :venues :category_id)))
 
 ;; Check that sync-table! causes FKs to be set like we'd expect
-(expect [{:total-fks 3, :updated-fks 0, :total-failed 0}
-         {:special_type :type/FK, :fk_target_field_id true}
-         {:special_type nil,      :fk_target_field_id false}
-         {:total-fks 3, :updated-fks 1, :total-failed 0}
-         {:special_type :type/FK, :fk_target_field_id true}]
+(expect (concat
+         (repeat 2 {:total-fks 3, :updated-fks 0, :total-failed 0})
+         [{:special_type :type/FK, :fk_target_field_id true}
+          {:special_type nil,      :fk_target_field_id false}]
+         (repeat 2 {:total-fks 3, :updated-fks 1, :total-failed 0})
+         [{:special_type :type/FK, :fk_target_field_id true}])
   (let [field-id (data/id :checkins :user_id)
         get-special-type-and-fk-exists? (fn []
                                           (into {} (-> (db/select-one [Field :special_type :fk_target_field_id],
                                                          :id field-id)
-                                                       (update :fk_target_field_id #(db/exists? Field :id %)))))]
+                                                       (update :fk_target_field_id #(db/exists? Field :id %)))))
+        {before-step-info :step-info,
+         before-task-history :task-history} (sut/sync-database! "sync-fks" (Database (data/id)))
+        before-special-type-exists? (get-special-type-and-fk-exists?)
+        _ (db/update! Field field-id, :special_type nil, :fk_target_field_id nil)
+        after-special-type-exists? (get-special-type-and-fk-exists?)
+        {after-step-info :step-info,
+         after-task-history :task-history} (sut/sync-database! "sync-fks" (Database (data/id)))]
     [
-     (sut/only-step-keys (sut/sync-database! "sync-fks" (Database (data/id))))
+     (sut/only-step-keys before-step-info)
+     (:task_details before-task-history)
      ;; FK should exist to start with
-     (get-special-type-and-fk-exists?)
+     before-special-type-exists?
      ;; Clear out FK / special_type
-     (do (db/update! Field field-id, :special_type nil, :fk_target_field_id nil)
-         (get-special-type-and-fk-exists?))
-
+     after-special-type-exists?
      ;; Run sync-table and they should be set again
-     (sut/only-step-keys (sut/sync-database! "sync-fks" (Database (data/id))))
+     (sut/only-step-keys after-step-info)
+     (:task_details after-task-history)
      (get-special-type-and-fk-exists?)]))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -209,7 +217,7 @@
             {new-db-type :database_type} (get-field)]
 
         ;; Syncing again with no change should not call sync-field-instances! or update the hash
-        (tu/throw-if-called metabase.sync.sync-metadata.fields/sync-field-instances!
+        (tu/throw-if-called sync-fields.sync-instances/sync-instances!
           (sync/sync-database! (data/db))
           [old-db-type
            new-db-type
@@ -295,4 +303,4 @@
       [(no-fields-hash before-table-md)
        (no-fields-hash after-table-md)
        (= (:fields-hash before-table-md)
-          (:fields-hash after-table-md))]))  )
+          (:fields-hash after-table-md))])))

@@ -1,5 +1,5 @@
 import { TYPE } from "metabase/lib/types";
-import { t } from "c-3po";
+import { t } from "ttag";
 
 export const field_special_types = [
   {
@@ -38,6 +38,11 @@ export const field_special_types = [
   {
     id: TYPE.Country,
     name: t`Country`,
+    section: t`Common`,
+  },
+  {
+    id: TYPE.Currency,
+    name: t`Currency`,
     section: t`Common`,
   },
   {

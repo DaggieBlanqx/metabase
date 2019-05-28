@@ -5,7 +5,7 @@ import { connect } from "react-redux";
 import styled from "styled-components";
 import { space } from "styled-system";
 import { Flex } from "grid-styled";
-import { t } from "c-3po";
+import { t } from "ttag";
 import { capitalize, inflect } from "metabase/lib/formatting";
 
 import { normal } from "metabase/lib/colors";
@@ -34,16 +34,19 @@ const DefaultMessage = ({
   undo: { verb = t`modified`, count = 1, subject = t`item` },
 }) => (
   <div>
-    {count > 1
-      ? t`${capitalize(verb)} ${count} ${inflect(subject, count)}`
-      : t`${capitalize(verb)} ${subject}`}
+    {count > 1 // TODO: figure out how to i18n this?
+      ? `${capitalize(verb)} ${count} ${inflect(subject, count)}`
+      : `${capitalize(verb)} ${subject}`}
   </div>
 );
 DefaultMessage.propTypes = {
   undo: PropTypes.object.isRequired,
 };
 
-@connect(mapStateToProps, mapDispatchToProps)
+@connect(
+  mapStateToProps,
+  mapDispatchToProps,
+)
 @BodyComponent
 export default class UndoListing extends Component {
   static propTypes = {
@@ -72,14 +75,13 @@ export default class UndoListing extends Component {
                 <DefaultMessage undo={undo || {}} />
               )}
 
-              {undo.actions &&
-                undo.actions.length > 0 && (
-                  <Link
-                    ml={1}
-                    onClick={() => performUndo(undo.id)}
-                    className="link text-bold"
-                  >{t`Undo`}</Link>
-                )}
+              {undo.actions && undo.actions.length > 0 && (
+                <Link
+                  ml={1}
+                  onClick={() => performUndo(undo.id)}
+                  className="link text-bold"
+                >{t`Undo`}</Link>
+              )}
               <Icon
                 ml={1}
                 color={normal.grey1}

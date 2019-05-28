@@ -2,7 +2,7 @@ import React, { Component } from "react";
 import PropTypes from "prop-types";
 
 import GuiQueryEditor from "metabase/query_builder/components/GuiQueryEditor.jsx";
-import { t } from "c-3po";
+import { t } from "ttag";
 import * as Urls from "metabase/lib/urls";
 
 import cx from "classnames";
@@ -25,7 +25,7 @@ export default class PartialQueryBuilder extends Component {
       database: tableMetadata.db_id,
       query: {
         ...value,
-        source_table: tableMetadata.id,
+        "source-table": tableMetadata.id,
       },
     });
   }
@@ -49,7 +49,7 @@ export default class PartialQueryBuilder extends Component {
       database: tableMetadata.db_id,
       query: {
         ...value,
-        source_table: tableMetadata.id,
+        "source-table": tableMetadata.id,
       },
     };
 

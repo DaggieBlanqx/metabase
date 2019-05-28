@@ -3,63 +3,58 @@
   `metabase.query-processor-test.*` namespaces; there are so many that it is no longer feasible to keep them all in
   this one. Event-based DBs such as Druid are tested in `metabase.driver.event-query-processor-test`."
   (:require [clojure.set :as set]
-            [clojure.tools.logging :as log]
             [medley.core :as m]
             [metabase
              [driver :as driver]
              [util :as u]]
+            [metabase.driver.util :as driver.u]
             [metabase.test.data :as data]
-            [metabase.test.data.datasets :as datasets]
-            [metabase.util.date :as du]))
-
-;; make sure all the driver test extension namespaces are loaded <3 if this isn't done some things will get loaded at
-;; the wrong time which can end up causing test databases to be created more than once, which fails
-(doseq [engine (keys (driver/available-drivers))]
-  (let [test-ns (symbol (str "metabase.test.data." (name engine)))]
-    (try
-      (require test-ns)
-      (catch Throwable e
-        (log/warn (format "Error loading %s: %s" test-ns (.getMessage e)))))))
-
+            [metabase.test.data
+             [datasets :as datasets]
+             [env :as tx.env]
+             [interface :as tx]]))
 
 ;;; ---------------------------------------------- Helper Fns + Macros -----------------------------------------------
 
+;; TODO - now that we've added Google Analytics to this, `timeseries-drivers` doesn't really make sense anymore.
+;; Perhaps we should rename it to `abnormal-drivers`
+
 ;; Event-Based DBs aren't tested here, but in `event-query-processor-test` instead.
-(def ^:private ^:const timeseries-engines #{:druid})
+(def ^:private timeseries-drivers #{:druid :googleanalytics})
 
-(def ^:const non-timeseries-engines
+(def non-timeseries-drivers
   "Set of engines for non-timeseries DBs (i.e., every driver except `:druid`)."
-  (set/difference datasets/all-valid-engines timeseries-engines))
+  (set/difference tx.env/test-drivers timeseries-drivers))
 
-(defn non-timeseries-engines-with-feature
+(defn non-timeseries-drivers-with-feature
   "Set of engines that support a given `feature`. If additional features are given, it will ensure all features are
   supported."
   [feature & more-features]
   (let [features (set (cons feature more-features))]
-    (set (for [engine non-timeseries-engines
-               :when  (set/subset? features (driver/features (driver/engine->driver engine)))]
+    (set (for [engine non-timeseries-drivers
+               :when  (set/subset? features (driver.u/features engine))]
            engine))))
 
-(defn non-timeseries-engines-without-feature
+(defn non-timeseries-drivers-without-feature
   "Return a set of all non-timeseries engines (e.g., everything except Druid) that DO NOT support `feature`."
   [feature]
-  (set/difference non-timeseries-engines (non-timeseries-engines-with-feature feature)))
+  (set/difference non-timeseries-drivers (non-timeseries-drivers-with-feature feature)))
 
 (defmacro expect-with-non-timeseries-dbs
   {:style/indent 0}
   [expected actual]
-  `(datasets/expect-with-engines non-timeseries-engines
+  `(datasets/expect-with-drivers non-timeseries-drivers
      ~expected
      ~actual))
 
 (defmacro expect-with-non-timeseries-dbs-except
   {:style/indent 1}
   [excluded-engines expected actual]
-  `(datasets/expect-with-engines (set/difference non-timeseries-engines (set ~excluded-engines))
+  `(datasets/expect-with-drivers (set/difference non-timeseries-drivers (set ~excluded-engines))
      ~expected
      ~actual))
 
-(defmacro qp-expect-with-all-engines
+(defmacro qp-expect-with-all-drivers
   {:style/indent 0}
   [data query-form & post-process-fns]
   `(expect-with-non-timeseries-dbs
@@ -70,10 +65,10 @@
          ~@post-process-fns)))
 
 ;; TODO - this is only used in a single place, consider removing it
-(defmacro qp-expect-with-engines
+(defmacro qp-expect-with-drivers
   {:style/indent 1}
-  [datasets data query-form]
-  `(datasets/expect-with-engines ~datasets
+  [drivers data query-form]
+  `(datasets/expect-with-drivers ~drivers
      {:status    :completed
       :row_count ~(count (:rows data))
       :data      ~data}
@@ -94,19 +89,15 @@
 ;; #### categories
 
 (defn- col-defaults []
-  {:extra_info      {}
-   :target          nil
-   :description     nil
+  {:description     nil
    :visibility_type :normal
-   :schema_name     (data/default-schema)
-   :source          :fields
-   :fk_field_id     nil
-   :remapped_from   nil
-   :remapped_to     nil})
+   :settings        nil
+   :parent_id       nil
+   :source          :fields})
 
 (defn- target-field [field]
   (when (data/fks-supported?)
-    (dissoc field :target :extra_info :schema_name :source :fk_field_id :remapped_from :remapped_to :fingerprint)))
+    (dissoc field :target :schema_name :fk_field_id :remapped_from :remapped_to :fingerprint)))
 
 (defn categories-col
   "Return column information for the `categories` column named by keyword COL."
@@ -124,11 +115,12 @@
             :base_type    (data/expected-base-type->actual :type/Text)
             :name         (data/format-name "name")
             :display_name "Name"
-            :fingerprint  {:global {:distinct-count 75}
+            :fingerprint  {:global {:distinct-count 75
+                                    :nil%           0.0}
                            :type   {:type/Text {:percent-json   0.0
                                                 :percent-url    0.0
                                                 :percent-email  0.0
-                                                :average-length 8.333}}}})))
+                                                :average-length 8.33}}}})))
 
 ;; #### users
 (defn users-col
@@ -143,24 +135,26 @@
                   :base_type    (data/id-field-type)
                   :name         (data/format-name "id")
                   :display_name "ID"
-                  :fingerprint  {:global {:distinct-count 15}, :type {:type/Number {:min 1, :max 15, :avg 8.0}}}}
+                  :fingerprint  nil}
      :name       {:special_type :type/Name
                   :base_type    (data/expected-base-type->actual :type/Text)
                   :name         (data/format-name "name")
                   :display_name "Name"
-                  :fingerprint  {:global {:distinct-count 15}
+                  :fingerprint  {:global {:distinct-count 15
+                                          :nil%           0.0}
                                  :type   {:type/Text {:percent-json   0.0
                                                       :percent-url    0.0
                                                       :percent-email  0.0
-                                                      :average-length 13.267}}}}
+                                                      :average-length 13.27}}}}
      :last_login {:special_type nil
                   :base_type    (data/expected-base-type->actual :type/DateTime)
                   :name         (data/format-name "last_login")
                   :display_name "Last Login"
                   :unit         :default
-                  :fingerprint  {:global {:distinct-count 11}
-                                 :type   {:type/DateTime {:earliest "2014-01-01T00:00:00.000Z"
-                                                          :latest   "2014-12-05T00:00:00.000Z"}}}})))
+                  :fingerprint  {:global {:distinct-count 15
+                                          :nil%           0.0}
+                                 :type   {:type/DateTime {:earliest "2014-01-01T08:30:00.000Z"
+                                                          :latest   "2014-12-05T15:15:00.000Z"}}}})))
 
 ;; #### venues
 (defn venues-columns
@@ -180,38 +174,47 @@
                    :base_type    (data/id-field-type)
                    :name         (data/format-name "id")
                    :display_name "ID"
-                   :fingerprint  {:global {:distinct-count 100}, :type {:type/Number {:min 1, :max 100, :avg 50.5}}}}
-     :category_id {:extra_info   (if (data/fks-supported?)
-                                   {:target_table_id (data/id :categories)}
-                                   {})
-                   :target       (target-field (categories-col :id))
-                   :special_type (if (data/fks-supported?)
+                   :fingerprint  nil}
+     :category_id {:special_type (if (data/fks-supported?)
                                    :type/FK
                                    :type/Category)
                    :base_type    (data/expected-base-type->actual :type/Integer)
                    :name         (data/format-name "category_id")
                    :display_name "Category ID"
-                   :fingerprint  {:global {:distinct-count 28}, :type {:type/Number {:min 2, :max 74, :avg 29.98}}}}
+                   :fingerprint  (if (data/fks-supported?)
+                                   {:global {:distinct-count 28
+                                             :nil%           0.0}}
+                                   {:global {:distinct-count 28
+                                             :nil%           0.0},
+                                    :type {:type/Number {:min 2.0, :max 74.0, :avg 29.98, :q1 7.0, :q3 49.0 :sd 23.06}}})}
      :price       {:special_type :type/Category
                    :base_type    (data/expected-base-type->actual :type/Integer)
                    :name         (data/format-name "price")
                    :display_name "Price"
-                   :fingerprint  {:global {:distinct-count 4}, :type {:type/Number {:min 1, :max 4, :avg 2.03}}}}
+                   :fingerprint  {:global {:distinct-count 4
+                                           :nil%           0.0},
+                                  :type {:type/Number {:min 1.0, :max 4.0, :avg 2.03, :q1 1.0, :q3 2.0 :sd 0.77}}}}
      :longitude   {:special_type :type/Longitude
                    :base_type    (data/expected-base-type->actual :type/Float)
                    :name         (data/format-name "longitude")
-                   :fingerprint  {:global {:distinct-count 84}, :type {:type/Number {:min -165.374, :max -73.953, :avg -115.998}}}
+                   :fingerprint  {:global {:distinct-count 84
+                                           :nil%           0.0},
+                                  :type {:type/Number {:min -165.37, :max -73.95, :avg -116.0 :q1 -122.0, :q3 -118.0 :sd 14.16}}}
                    :display_name "Longitude"}
      :latitude    {:special_type :type/Latitude
                    :base_type    (data/expected-base-type->actual :type/Float)
                    :name         (data/format-name "latitude")
                    :display_name "Latitude"
-                   :fingerprint  {:global {:distinct-count 94}, :type {:type/Number {:min 10.065, :max 40.779, :avg 35.506}}}}
+                   :fingerprint  {:global {:distinct-count 94
+                                           :nil%           0.0},
+                                  :type {:type/Number {:min 10.06, :max 40.78, :avg 35.51, :q1 34.0, :q3 38.0 :sd 3.43}}}}
      :name        {:special_type :type/Name
                    :base_type    (data/expected-base-type->actual :type/Text)
                    :name         (data/format-name "name")
                    :display_name "Name"
-                   :fingerprint  {:global {:distinct-count 100}, :type {:type/Text {:percent-json 0.0, :percent-url 0.0, :percent-email 0.0, :average-length 15.63}}}})))
+                   :fingerprint  {:global {:distinct-count 100
+                                           :nil%           0.0},
+                                  :type {:type/Text {:percent-json 0.0, :percent-url 0.0, :percent-email 0.0, :average-length 15.63}}}})))
 
 (defn venues-cols
   "`cols` information for all the columns in `venues`."
@@ -231,26 +234,29 @@
                 :base_type    (data/id-field-type)
                 :name         (data/format-name "id")
                 :display_name "ID"}
-     :venue_id {:extra_info   (if (data/fks-supported?)
-                                {:target_table_id (data/id :venues)}
-                                {})
-                :target       (target-field (venues-col :id))
-                :special_type (when (data/fks-supported?)
+     :venue_id {:special_type (when (data/fks-supported?)
                                 :type/FK)
                 :base_type    (data/expected-base-type->actual :type/Integer)
                 :name         (data/format-name "venue_id")
                 :display_name "Venue ID"
-                :fingerprint  {:global {:distinct-count 100}, :type {:type/Number {:min 1, :max 100, :avg 51.965}}}}
-     :user_id  {:extra_info   (if (data/fks-supported?) {:target_table_id (data/id :users)}
-                                  {})
-                :target       (target-field (users-col :id))
-                :special_type (if (data/fks-supported?)
+                :fingerprint  (if (data/fks-supported?)
+                                {:global {:distinct-count 100
+                                          :nil%           0.0}}
+                                {:global {:distinct-count 100
+                                          :nil%           0.0},
+                                 :type {:type/Number {:min 1.0, :max 100.0, :avg 51.97, :q1 28.0, :q3 76.0 :sd 28.51}}})}
+     :user_id  {:special_type (if (data/fks-supported?)
                                 :type/FK
                                 :type/Category)
                 :base_type    (data/expected-base-type->actual :type/Integer)
                 :name         (data/format-name "user_id")
                 :display_name "User ID"
-                :fingerprint  {:global {:distinct-count 15}, :type {:type/Number {:min 1, :max 15, :avg 7.929}}}})))
+                :fingerprint  (if (data/fks-supported?)
+                                {:global {:distinct-count 15
+                                          :nil%           0.0}}
+                                {:global {:distinct-count 15
+                                          :nil%           0.0},
+                                 :type {:type/Number {:min 1.0, :max 15.0, :avg 7.93 :q1 4.0, :q3 11.0 :sd 3.99}}})})))
 
 
 ;;; #### aggregate columns
@@ -261,38 +267,12 @@
 
     (aggregate-col :count)
     (aggregate-col :avg (venues-col :id))"
-  {:arglists '([ag-col-kw] [ag-col-kw field])}
-  ([ag-col-kw]
-   (case ag-col-kw
-     :count  {:base_type       :type/Integer
-              :special_type    :type/Number
-              :name            "count"
-              :display_name    "count"
-              :id              nil
-              :table_id        nil
-              :description     nil
-              :source          :aggregation
-              :extra_info      {}
-              :target          nil
-              :remapped_from   nil
-              :remapped_to     nil}))
-  ([ag-col-kw {:keys [base_type special_type]}]
-   {:pre [base_type special_type]}
-   {:base_type    base_type
-    :special_type  special_type
-    :id            nil
-    :table_id      nil
-    :description   nil
-    :source        :aggregation
-    :extra_info    {}
-    :target        nil
-    :name          (name ag-col-kw)
-    :display_name  (name ag-col-kw)
-    :remapped_from nil
-    :remapped_to   nil}))
+  {:arglists '([ag-type] [ag-type field])}
+  [& args]
+  (apply tx/aggregate-column-info (tx/driver) args))
 
-(defn breakout-col [column]
-  (assoc column :source :breakout))
+(defn breakout-col [col]
+  (assoc col :source :breakout))
 
 ;; TODO - maybe this needs a new name now that it also removes the results_metadata
 (defn booleanize-native-form
@@ -301,7 +281,8 @@
   [m]
   (-> m
       (update-in [:data :native_form] boolean)
-      (m/dissoc-in [:data :results_metadata])))
+      (m/dissoc-in [:data :results_metadata])
+      (m/dissoc-in [:data :insights])))
 
 (defn format-rows-by
   "Format the values in result ROWS with the fns at the corresponding indecies in FORMAT-FNS. ROWS can be a sequence
@@ -313,62 +294,79 @@
   this behavior."
   {:style/indent 1}
   ([format-fns rows]
-   (format-rows-by format-fns (not :format-nil-values?) rows))
-  ([format-fns format-nil-values? rows]
-   (cond
-     (= (:status rows) :failed) (do (println "Error running query:" (u/pprint-to-str 'red rows))
-                                    (throw (ex-info (:error rows) rows)))
+   (format-rows-by format-fns false rows))
 
-     (:data rows) (update-in rows [:data :rows] (partial format-rows-by format-fns))
-     (:rows rows) (update    rows :rows         (partial format-rows-by format-fns))
-     :else        (vec (for [row rows]
-                         (vec (for [[f v] (partition 2 (interleave format-fns row))]
-                                (when (or v format-nil-values?)
-                                  (try (f v)
-                                       (catch Throwable e
-                                         (printf "(%s %s) failed: %s" f v (.getMessage e))
-                                         (throw e)))))))))))
+  ([format-fns format-nil-values? response]
+   (when (= (:status response) :failed)
+     (println "Error running query:" (u/pprint-to-str 'red response))
+     (throw (ex-info (:error response) response)))
+
+   (-> response
+       ((fn format-rows [rows]
+          (cond
+            (:data rows)
+            (update rows :data format-rows)
+
+            (:rows rows)
+            (update rows :rows format-rows)
+
+            (sequential? rows)
+            (vec
+             (for [row rows]
+               (vec
+                (for [[f v] (partition 2 (interleave format-fns row))]
+                  (when (or v format-nil-values?)
+                    (try
+                      (f v)
+                      (catch Throwable e
+                        (printf "(%s %s) failed: %s" f v (.getMessage e))
+                        (throw e))))))))
+
+            :else
+            (throw (ex-info "Unexpected response: rows are not sequential!" {:response response}))))))))
 
 (def ^{:arglists '([results])} formatted-venues-rows
-  "Helper function to format the rows in RESULTS when running a 'raw data' query against the Venues test table."
+  "Helper function to format the rows in `results` when running a 'raw data' query against the Venues test table."
   (partial format-rows-by [int str int (partial u/round-to-decimals 4) (partial u/round-to-decimals 4) int]))
 
-
-(defn rows
-  "Return the result rows from query RESULTS, or throw an Exception if they're missing."
+(defn data
+  "Return the result `data` from a successful query run, or throw an Exception if processing failed."
   {:style/indent 0}
   [results]
-  (vec (or (get-in results [:data :rows])
-           (println (u/pprint-to-str 'red results)) ; DEBUG
-           (throw (Exception. "Error!")))))
+  (when (= (:status results) :failed)
+    (println "Error running query:" (u/pprint-to-str 'red results))
+    (throw (ex-info (str (or (:error results) "Error running query"))
+             (if (map? results) results {:results results}))))
+  (:data results))
+
+(defn rows
+  "Return the result rows from query `results`, or throw an Exception if they're missing."
+  {:style/indent 0}
+  [results]
+  (or (some-> (data results) :rows vec)
+      (throw (ex-info "Query does not have any :rows in results." results))))
 
 (defn rows+column-names
-  "Return the result rows and column names from query RESULTS, or throw an Exception if they're missing."
+  "Return the result rows and column names from query `results`, or throw an Exception if they're missing."
   {:style/indent 0}
   [results]
   {:rows    (rows results)
    :columns (get-in results [:data :columns])})
 
 (defn first-row
-  "Return the first row in the RESULTS of a query, or throw an Exception if they're missing."
+  "Return the first row in the `results` of a query, or throw an Exception if they're missing."
   {:style/indent 0}
   [results]
   (first (rows results)))
 
 (defn supports-report-timezone?
-  "Returns truthy if `ENGINE` supports setting a timezone"
-  [engine]
-  (-> engine
-      driver/engine->driver
-      driver/features
-      (contains? :set-timezone)))
+  "Returns truthy if `driver` supports setting a timezone"
+  [driver]
+  (driver/supports? driver :set-timezone))
 
-(defmacro with-h2-db-timezone
-  "This macro is useful when testing pieces of the query pipeline (such as expand) where it's a basic unit test not
-  involving a database, but does need to parse dates"
-  [& body]
-  `(du/with-effective-timezone {:engine   :h2
-                                :timezone "UTC"
-                                :name     "mock_db"
-                                :id       1}
-    ~@body))
+(defn cols
+  "Return the result `:cols` from query `results`, or throw an Exception if they're missing."
+  {:style/indent 0}
+  [results]
+  (or (some-> (data results) :cols vec)
+      (throw (ex-info "Query does not have any :cols in results." results))))

@@ -3,13 +3,13 @@ import React, { Component } from "react";
 import PropTypes from "prop-types";
 import _ from "underscore";
 import { assoc, assocIn } from "icepick";
-import { t } from "c-3po";
+import { t } from "ttag";
 
 import RecipientPicker from "./RecipientPicker.jsx";
 
 import SchedulePicker from "metabase/components/SchedulePicker.jsx";
 import ActionButton from "metabase/components/ActionButton.jsx";
-import Select from "metabase/components/Select.jsx";
+import Select, { Option } from "metabase/components/Select.jsx";
 import Toggle from "metabase/components/Toggle.jsx";
 import Icon from "metabase/components/Icon.jsx";
 import ChannelSetupMessage from "metabase/components/ChannelSetupMessage";
@@ -17,8 +17,6 @@ import ChannelSetupMessage from "metabase/components/ChannelSetupMessage";
 import MetabaseAnalytics from "metabase/lib/analytics";
 
 import { channelIsValid, createChannel } from "metabase/lib/pulse";
-
-import cx from "classnames";
 
 export const CHANNEL_ICONS = {
   email: "mail",
@@ -31,10 +29,7 @@ const CHANNEL_NOUN_PLURAL = {
 };
 
 export default class PulseEditChannels extends Component {
-  constructor(props) {
-    super(props);
-    this.state = {};
-  }
+  state = {};
 
   static propTypes = {
     pulse: PropTypes.object.isRequired,
@@ -42,7 +37,7 @@ export default class PulseEditChannels extends Component {
     pulseIsValid: PropTypes.bool.isRequired,
     formInput: PropTypes.object.isRequired,
     user: PropTypes.object.isRequired,
-    userList: PropTypes.array.isRequired,
+    users: PropTypes.array.isRequired,
     setPulse: PropTypes.func.isRequired,
     testPulse: PropTypes.func,
     cardPreviews: PropTypes.object,
@@ -108,8 +103,8 @@ export default class PulseEditChannels extends Component {
           assoc(
             pulse,
             "channels",
-            pulse.channels.map(
-              c => (c.channel_type === type ? assoc(c, "enabled", true) : c),
+            pulse.channels.map(c =>
+              c.channel_type === type ? assoc(c, "enabled", true) : c,
             ),
           ),
         );
@@ -121,8 +116,8 @@ export default class PulseEditChannels extends Component {
         assoc(
           pulse,
           "channels",
-          pulse.channels.map(
-            c => (c.channel_type === type ? assoc(c, "enabled", false) : c),
+          pulse.channels.map(c =>
+            c.channel_type === type ? assoc(c, "enabled", false) : c,
           ),
         ),
       );
@@ -161,19 +156,24 @@ export default class PulseEditChannels extends Component {
             <span className="h4 text-bold mr1">{field.displayName}</span>
             {field.type === "select" ? (
               <Select
-                className="h4 text-bold bg-white"
+                className="h4 text-bold bg-white inline-block"
                 value={channel.details && channel.details[field.name]}
-                options={field.options}
-                optionNameFn={o => o}
-                optionValueFn={o => o}
+                placeholder={t`Pick a user or channel...`}
+                searchProp="name"
                 // Address #5799 where `details` object is missing for some reason
                 onChange={o =>
                   this.onChannelPropertyChange(index, "details", {
                     ...channel.details,
-                    [field.name]: o,
+                    [field.name]: o.target.value,
                   })
                 }
-              />
+              >
+                {field.options.map(option => (
+                  <Option name={option} value={option}>
+                    {option}
+                  </Option>
+                ))}
+              </Select>
             ) : null}
           </div>
         ))}
@@ -199,7 +199,7 @@ export default class PulseEditChannels extends Component {
               autoFocus={!!this.props.pulse.name}
               recipients={channel.recipients}
               recipientTypes={channelSpec.recipients}
-              users={this.props.userList}
+              users={this.props.users}
               onRecipientsChange={recipients =>
                 this.onChannelPropertyChange(index, "recipients", recipients)
               }
@@ -207,29 +207,33 @@ export default class PulseEditChannels extends Component {
           </div>
         )}
         {channelSpec.fields && this.renderFields(channel, index, channelSpec)}
-        {!this.props.hideSchedulePicker &&
-          channelSpec.schedules && (
-            <SchedulePicker
-              schedule={_.pick(
-                channel,
-                "schedule_day",
-                "schedule_frame",
-                "schedule_hour",
-                "schedule_type",
-              )}
-              scheduleOptions={channelSpec.schedules}
-              textBeforeInterval={t`Sent`}
-              textBeforeSendTime={t`${CHANNEL_NOUN_PLURAL[
-                channelSpec && channelSpec.type
-              ] || t`Messages`} will be sent at`}
-              onScheduleChange={this.onChannelScheduleChange.bind(this, index)}
-            />
-          )}
+        {!this.props.hideSchedulePicker && channelSpec.schedules && (
+          <SchedulePicker
+            schedule={_.pick(
+              channel,
+              "schedule_day",
+              "schedule_frame",
+              "schedule_hour",
+              "schedule_type",
+            )}
+            scheduleOptions={channelSpec.schedules}
+            textBeforeInterval={t`Sent`}
+            textBeforeSendTime={t`${CHANNEL_NOUN_PLURAL[
+              channelSpec && channelSpec.type
+            ] || t`Messages`} will be sent at`}
+            onScheduleChange={this.onChannelScheduleChange.bind(this, index)}
+          />
+        )}
         {this.props.testPulse && (
           <div className="pt2">
             <ActionButton
               actionFn={this.onTestPulseChannel.bind(this, channel)}
-              className={cx("Button", { disabled: !isValid })}
+              disabled={
+                !isValid ||
+                /* require at least one email recipient to allow email pulse testing */
+                (channelSpec.type === "email" &&
+                  channel.recipients.length === 0)
+              }
               normalText={
                 channelSpec.type === "email"
                   ? t`Send email now`

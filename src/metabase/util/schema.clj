@@ -1,16 +1,38 @@
 (ns metabase.util.schema
   "Various schemas that are useful throughout the app."
+  (:refer-clojure :exclude [distinct])
   (:require [cheshire.core :as json]
             [clojure.string :as str]
             [medley.core :as m]
             [metabase.util :as u]
-            [metabase.util.password :as password]
-            [puppetlabs.i18n.core :refer [tru]]
-            [schema.core :as s]))
+            [metabase.util
+             [i18n :refer [tru]]
+             [password :as password]]
+            [schema
+             [core :as s]
+             [macros :as s.macros]
+             [utils :as s.utils]]))
 
 ;; always validate all schemas in s/defn function declarations. See
 ;; https://github.com/plumatic/schema#schemas-in-practice for details.
 (s/set-fn-validation! true)
+
+;; swap out the default impl of `schema.core/validator` with one that does not barf out the entire schema, since it's
+;; way too huge with things like our MBQL query schema
+(defn- schema-core-validator [schema]
+  (let [c (s/checker schema)]
+    (fn [value]
+      (when-let [error (c value)]
+        (s.macros/error! (s.utils/format* "Value does not match schema: %s" (pr-str error))
+                         {:value value, :error error}))
+      value)))
+
+(intern 'schema.core 'validator schema-core-validator)
+
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                     API Schema Validation & Error Messages                                     |
+;;; +----------------------------------------------------------------------------------------------------------------+
 
 (defn with-api-error-message
   "Return SCHEMA with an additional API-ERROR-MESSAGE that will be used to explain the error if a parameter fails
@@ -95,11 +117,24 @@
 
 
 (defn non-empty
-  "Add an addditonal constraint to SCHEMA (presumably an array) that requires it to be non-empty
+  "Add an addditonal constraint to `schema` (presumably an array) that requires it to be non-empty
    (i.e., it must satisfy `seq`)."
   [schema]
   (with-api-error-message (s/constrained schema seq "Non-empty")
     (str (api-error-message schema) " " (tru "The array cannot be empty."))))
+
+(defn empty-or-distinct?
+  "True if `coll` is either empty or distinct."
+  [coll]
+  (if (seq coll)
+    (apply distinct? coll)
+    true))
+
+(defn distinct
+  "Add an additional constraint to `schema` (presumably an array) that requires all elements to be distinct."
+  [schema]
+  (with-api-error-message (s/constrained schema empty-or-distinct? "distinct")
+    (str (api-error-message schema) " " (tru "All elements must be distinct."))))
 
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -111,12 +146,24 @@
   (with-api-error-message (s/constrained s/Str (complement str/blank?) "Non-blank string")
     (tru "value must be a non-blank string.")))
 
+(def IntGreaterThanOrEqualToZero
+  "Schema representing an integer than must also be greater than or equal to zero."
+  (with-api-error-message
+      (s/constrained s/Int (partial <= 0) (tru "Integer greater than or equal to zero"))
+    (tru "value must be an integer greater than or equal to zero.")))
+
 ;; TODO - rename this to `PositiveInt`?
 (def IntGreaterThanZero
   "Schema representing an integer than must also be greater than zero."
   (with-api-error-message
       (s/constrained s/Int (partial < 0) (tru "Integer greater than zero"))
     (tru "value must be an integer greater than zero.")))
+
+(def NonNegativeInt
+  "Schema representing an integer 0 or greater"
+  (with-api-error-message
+      (s/constrained s/Int (partial <= 0) (tru "Integer greater than or equal to zero"))
+    (tru "value must be an integer zero or greater.")))
 
 (def PositiveNum
   "Schema representing a numeric value greater than zero. This allows floating point numbers and integers."
@@ -171,6 +218,12 @@
    Something that adheres to this schema is guaranteed to to work with `Integer/parseInt`."
   (with-api-error-message (s/constrained s/Str #(u/ignore-exceptions (< 0 (Integer/parseInt %))))
     (tru "value must be a valid integer greater than zero.")))
+
+(def IntStringGreaterThanOrEqualToZero
+  "Schema for a string that can be parsed as an integer, and is greater than or equal to zero.
+   Something that adheres to this schema is guaranteed to to work with `Integer/parseInt`."
+  (with-api-error-message (s/constrained s/Str #(u/ignore-exceptions (<= 0 (Integer/parseInt %))))
+    (tru "value must be a valid integer greater than or equal to zero.")))
 
 (defn- boolean-string? ^Boolean [s]
   (boolean (when (string? s)

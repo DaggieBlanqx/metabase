@@ -1,8 +1,7 @@
 /* eslint "react/prop-types": "warn" */
 import React, { Component } from "react";
 import PropTypes from "prop-types";
-import { t, jt, ngettext, msgid } from "c-3po";
-import { withRouter } from "react-router";
+import { t, jt, ngettext, msgid } from "ttag";
 
 import PulseEditName from "./PulseEditName.jsx";
 import PulseEditCollection from "./PulseEditCollection";
@@ -21,44 +20,17 @@ import DeleteModalWithConfirm from "metabase/components/DeleteModalWithConfirm.j
 import { pulseIsValid, cleanPulse, emailIsEnabled } from "metabase/lib/pulse";
 import * as Urls from "metabase/lib/urls";
 
-import _ from "underscore";
 import cx from "classnames";
-import { connect } from "react-redux";
-import { goBack } from "react-router-redux";
 
-import Collections from "metabase/entities/collections";
-
-const mapStateToProps = (state, props) => ({
-  initialCollectionId: Collections.selectors.getInitialCollectionId(
-    state,
-    props,
-  ),
-});
-
-const mapDispatchToProps = {
-  goBack,
-};
-
-@connect(mapStateToProps, mapDispatchToProps)
-@withRouter
 export default class PulseEdit extends Component {
-  constructor(props) {
-    super(props);
-
-    _.bindAll(this, "save", "delete", "setPulse");
-  }
-
   static propTypes = {
     pulse: PropTypes.object.isRequired,
     pulseId: PropTypes.number,
     formInput: PropTypes.object.isRequired,
     setEditingPulse: PropTypes.func.isRequired,
-    fetchCards: PropTypes.func.isRequired,
-    fetchUsers: PropTypes.func.isRequired,
     fetchPulseFormInput: PropTypes.func.isRequired,
     updateEditingPulse: PropTypes.func.isRequired,
     saveEditingPulse: PropTypes.func.isRequired,
-    deletePulse: PropTypes.func.isRequired,
     onChangeLocation: PropTypes.func.isRequired,
     goBack: PropTypes.func,
     initialCollectionId: PropTypes.number,
@@ -69,8 +41,6 @@ export default class PulseEdit extends Component {
       this.props.pulseId,
       this.props.initialCollectionId,
     );
-    this.props.fetchCards();
-    this.props.fetchUsers();
     this.props.fetchPulseFormInput();
 
     MetabaseAnalytics.trackEvent(
@@ -79,7 +49,7 @@ export default class PulseEdit extends Component {
     );
   }
 
-  async save() {
+  handleSave = async () => {
     let pulse = cleanPulse(this.props.pulse, this.props.formInput.channels);
     await this.props.updateEditingPulse(pulse);
     await this.props.saveEditingPulse();
@@ -91,50 +61,61 @@ export default class PulseEdit extends Component {
     );
 
     this.props.onChangeLocation(Urls.collection(pulse.collection_id));
-  }
+  };
 
-  async delete() {
-    await this.props.deletePulse(this.props.pulse.id);
+  handleArchive = async () => {
+    await this.props.setPulseArchived(this.props.pulse, true);
 
-    MetabaseAnalytics.trackEvent("PulseDelete", "Complete");
+    MetabaseAnalytics.trackEvent("PulseArchive", "Complete");
 
-    this.props.onChangeLocation("/pulse");
-  }
+    this.props.onChangeLocation(
+      Urls.collection(this.props.pulse.collection_id),
+    );
+  };
 
-  setPulse(pulse) {
+  handleUnarchive = async () => {
+    await this.props.setPulseArchived(this.props.pulse, false);
+    this.setPulse({ ...this.props.pulse, archived: false });
+
+    MetabaseAnalytics.trackEvent("PulseUnarchive", "Complete");
+  };
+
+  setPulse = pulse => {
     this.props.updateEditingPulse(pulse);
-  }
+  };
 
   getConfirmItems() {
-    return this.props.pulse.channels.map(
-      (c, index) =>
-        c.channel_type === "email" ? (
-          <span key={index}>
-            {jt`This pulse will no longer be emailed to ${(
-              <strong>
-                {(n => ngettext(msgid`${n} address`, `${n} addresses`, n))(
-                  c.recipients.length,
-                )}
-              </strong>
-            )} ${<strong>{c.schedule_type}</strong>}`}.
-          </span>
-        ) : c.channel_type === "slack" ? (
-          <span key={index}>
-            {jt`Slack channel ${(
-              <strong>{c.details && c.details.channel}</strong>
-            )} will no longer get this pulse ${(
-              <strong>{c.schedule_type}</strong>
-            )}`}.
-          </span>
-        ) : (
-          <span key={index}>
-            {jt`Channel ${(
-              <strong>{c.channel_type}</strong>
-            )} will no longer receive this pulse ${(
-              <strong>{c.schedule_type}</strong>
-            )}`}.
-          </span>
-        ),
+    return this.props.pulse.channels.map((c, index) =>
+      c.channel_type === "email" ? (
+        <span key={index}>
+          {jt`This pulse will no longer be emailed to ${(
+            <strong>
+              {(n => ngettext(msgid`${n} address`, `${n} addresses`, n))(
+                c.recipients.length,
+              )}
+            </strong>
+          )} ${<strong>{c.schedule_type}</strong>}`}
+          .
+        </span>
+      ) : c.channel_type === "slack" ? (
+        <span key={index}>
+          {jt`Slack channel ${(
+            <strong>{c.details && c.details.channel}</strong>
+          )} will no longer get this pulse ${(
+            <strong>{c.schedule_type}</strong>
+          )}`}
+          .
+        </span>
+      ) : (
+        <span key={index}>
+          {jt`Channel ${(
+            <strong>{c.channel_type}</strong>
+          )} will no longer receive this pulse ${(
+            <strong>{c.schedule_type}</strong>
+          )}`}
+          .
+        </span>
+      ),
     );
   }
 
@@ -183,49 +164,49 @@ export default class PulseEdit extends Component {
             />
           </div>
           <PulseEditSkip {...this.props} setPulse={this.setPulse} />
-          {pulse &&
-            pulse.id != null && (
-              <div className="DangerZone mb2 p3 rounded bordered relative">
-                <h3
-                  className="text-error absolute top bg-white px1"
-                  style={{ marginTop: "-12px" }}
-                >{t`Danger Zone`}</h3>
-                <div className="ml1">
-                  <h4 className="text-bold mb1">{t`Delete this pulse`}</h4>
-                  <div className="flex">
-                    <p className="h4 pr2">{t`Stop delivery and delete this pulse. There's no undo, so be careful.`}</p>
-                    <ModalWithTrigger
-                      ref={"deleteModal" + pulse.id}
-                      triggerClasses="Button Button--danger flex-align-right flex-no-shrink"
-                      triggerElement={t`Delete this Pulse`}
-                    >
-                      <DeleteModalWithConfirm
-                        objectType="pulse"
-                        title={t`Delete` + ' "' + pulse.name + '"?'}
-                        confirmItems={this.getConfirmItems()}
-                        onClose={() =>
-                          this.refs["deleteModal" + pulse.id].close()
-                        }
-                        onDelete={this.delete}
-                      />
-                    </ModalWithTrigger>
-                  </div>
-                </div>
-              </div>
-            )}
         </div>
         <div className="PulseEdit-footer flex align-center border-top py3">
-          <ActionButton
-            actionFn={this.save}
-            className={cx("Button Button--primary", { disabled: !isValid })}
-            normalText={pulse.id != null ? t`Save changes` : t`Create pulse`}
-            activeText={t`Saving…`}
-            failedText={t`Save failed`}
-            successText={t`Saved`}
-          />
+          {pulse.archived ? (
+            <ActionButton
+              key="unarchive"
+              actionFn={this.handleUnarchive}
+              className={cx("Button Button--danger")}
+              normalText={t`Unarchive`}
+              activeText={t`Unarchiving…`}
+              failedText={t`Unarchive failed`}
+              successText={t`Unarchived`}
+            />
+          ) : (
+            <ActionButton
+              key="save"
+              actionFn={this.handleSave}
+              className={cx("Button Button--primary", { disabled: !isValid })}
+              normalText={pulse.id != null ? t`Save changes` : t`Create pulse`}
+              activeText={t`Saving…`}
+              failedText={t`Save failed`}
+              successText={t`Saved`}
+            />
+          )}
           <Button onClick={() => this.props.goBack()} ml={2}>
             {t`Cancel`}
           </Button>
+          {pulse.id != null && !pulse.archived && (
+            <ModalWithTrigger
+              triggerClasses="Button Button--danger flex-align-right flex-no-shrink"
+              triggerElement={t`Archive`}
+            >
+              {({ onClose }) => (
+                <DeleteModalWithConfirm
+                  objectType="pulse"
+                  title={t`Archive` + ' "' + pulse.name + '"?'}
+                  buttonText={t`Archive`}
+                  confirmItems={this.getConfirmItems()}
+                  onClose={onClose}
+                  onDelete={this.handleArchive}
+                />
+              )}
+            </ModalWithTrigger>
+          )}
         </div>
       </div>
     );

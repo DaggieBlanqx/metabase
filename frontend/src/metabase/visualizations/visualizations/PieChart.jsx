@@ -3,20 +3,24 @@
 import React, { Component } from "react";
 import ReactDOM from "react-dom";
 import styles from "./PieChart.css";
-import { t } from "c-3po";
+import { t } from "ttag";
 import ChartTooltip from "../components/ChartTooltip.jsx";
 import ChartWithLegend from "../components/ChartWithLegend.jsx";
 
-import { ChartSettingsError } from "metabase/visualizations/lib/errors";
+import {
+  ChartSettingsError,
+  MinRowsError,
+} from "metabase/visualizations/lib/errors";
 import { getFriendlyName } from "metabase/visualizations/lib/utils";
 import {
   metricSetting,
   dimensionSetting,
-} from "metabase/visualizations/lib/settings";
+} from "metabase/visualizations/lib/settings/utils";
+import { columnSettings } from "metabase/visualizations/lib/settings/column";
 
 import { formatValue } from "metabase/lib/formatting";
 
-import { normal, harmony } from "metabase/lib/colors";
+import colors, { getColorsForValues } from "metabase/lib/colors";
 
 import cx from "classnames";
 
@@ -26,7 +30,7 @@ import _ from "underscore";
 const OUTER_RADIUS = 50; // within 100px canvas
 const INNER_RADIUS_RATIO = 3 / 5;
 
-const PAD_ANGLE = Math.PI / 180 * 1; // 1 degree in radians
+const PAD_ANGLE = (Math.PI / 180) * 1; // 1 degree in radians
 const SLICE_THRESHOLD = 0.025; // approx 1 degree in percentage
 const OTHER_SLICE_MIN_PERCENTAGE = 0.003;
 
@@ -43,46 +47,123 @@ export default class PieChart extends Component {
 
   static minSize = { width: 4, height: 4 };
 
-  static isSensible(cols, rows) {
+  static isSensible({ cols, rows }) {
     return cols.length === 2;
   }
 
-  static checkRenderable([{ data: { cols, rows } }], settings) {
+  static checkRenderable(
+    [
+      {
+        data: { cols, rows },
+      },
+    ],
+    settings,
+  ) {
+    // This prevents showing "Which columns do you want to use" when
+    // the piechart is displayed with no results in the dashboard
+    if (rows.length < 1) {
+      throw new MinRowsError(1, 0);
+    }
     if (!settings["pie.dimension"] || !settings["pie.metric"]) {
-      throw new ChartSettingsError(
-        t`Which columns do you want to use?`,
-        t`Data`,
-      );
+      throw new ChartSettingsError(t`Which columns do you want to use?`, {
+        section: `Data`,
+      });
     }
   }
 
   static settings = {
-    "pie.dimension": {
-      section: "Data",
+    ...columnSettings({ hidden: true }),
+    ...dimensionSetting("pie.dimension", {
+      section: t`Data`,
       title: t`Dimension`,
-      ...dimensionSetting("pie.dimension"),
-    },
-    "pie.metric": {
-      section: "Data",
+      showColumnSetting: true,
+    }),
+    ...metricSetting("pie.metric", {
+      section: t`Data`,
       title: t`Measure`,
-      ...metricSetting("pie.metric"),
-    },
+      showColumnSetting: true,
+    }),
     "pie.show_legend": {
-      section: "Display",
+      section: t`Display`,
       title: t`Show legend`,
       widget: "toggle",
     },
     "pie.show_legend_perecent": {
-      section: "Display",
+      section: t`Display`,
       title: t`Show percentages in legend`,
       widget: "toggle",
       default: true,
     },
     "pie.slice_threshold": {
-      section: "Display",
+      section: t`Display`,
       title: t`Minimum slice percentage`,
       widget: "number",
       default: SLICE_THRESHOLD * 100,
+    },
+    "pie.colors": {
+      section: t`Display`,
+      title: t`Colors`,
+      widget: "colors",
+      getDefault: (series, settings) =>
+        settings["pie._dimensionValues"]
+          ? getColorsForValues(settings["pie._dimensionValues"])
+          : [],
+      getProps: (series, settings) => ({
+        seriesTitles: settings["pie._dimensionValues"] || [],
+      }),
+      getDisabled: (series, settings) => !settings["pie._dimensionValues"],
+      readDependencies: ["pie._dimensionValues"],
+    },
+    // this setting recomputes color assignment using pie.colors as the existing
+    // assignments in case the user previous modified pie.colors and a new value
+    // has appeared. Not ideal because those color values will be missing in the
+    // settings UI
+    "pie._colors": {
+      getValue: (series, settings) =>
+        getColorsForValues(
+          settings["pie._dimensionValues"],
+          settings["pie.colors"],
+        ),
+      readDependencies: ["pie._dimensionValues", "pie.colors"],
+    },
+    "pie._metricIndex": {
+      getValue: (
+        [
+          {
+            data: { cols },
+          },
+        ],
+        settings,
+      ) => _.findIndex(cols, col => col.name === settings["pie.metric"]),
+      readDependencies: ["pie.metric"],
+    },
+    "pie._dimensionIndex": {
+      getValue: (
+        [
+          {
+            data: { cols },
+          },
+        ],
+        settings,
+      ) => _.findIndex(cols, col => col.name === settings["pie.dimension"]),
+      readDependencies: ["pie.dimension"],
+    },
+    "pie._dimensionValues": {
+      getValue: (
+        [
+          {
+            data: { rows },
+          },
+        ],
+        settings,
+      ) => {
+        const dimensionIndex = settings["pie._dimensionIndex"];
+        return dimensionIndex >= 0
+          ? // cast to string because getColorsForValues expects strings
+            rows.map(row => String(row[dimensionIndex]))
+          : null;
+      },
+      readDependencies: ["pie._dimensionIndex"],
     },
   };
 
@@ -108,35 +189,42 @@ export default class PieChart extends Component {
       settings,
     } = this.props;
 
-    const [{ data: { cols, rows } }] = series;
-    const dimensionIndex = _.findIndex(
-      cols,
-      col => col.name === settings["pie.dimension"],
-    );
-    const metricIndex = _.findIndex(
-      cols,
-      col => col.name === settings["pie.metric"],
-    );
+    const [
+      {
+        data: { cols, rows },
+      },
+    ] = series;
+    const dimensionIndex = settings["pie._dimensionIndex"];
+    const metricIndex = settings["pie._metricIndex"];
 
     const formatDimension = (dimension, jsx = true) =>
       formatValue(dimension, {
-        column: cols[dimensionIndex],
+        ...settings.column(cols[dimensionIndex]),
         jsx,
         majorWidth: 0,
       });
     const formatMetric = (metric, jsx = true) =>
-      formatValue(metric, { column: cols[metricIndex], jsx, majorWidth: 0 });
-    const formatPercent = percent => (100 * percent).toFixed(2) + "%";
+      formatValue(metric, {
+        ...settings.column(cols[metricIndex]),
+        jsx,
+        majorWidth: 0,
+      });
+    const formatPercent = (percent, jsx = true) =>
+      formatValue(percent, {
+        ...settings.column(cols[metricIndex]),
+        jsx,
+        majorWidth: 0,
+        number_style: "percent",
+        minimumSignificantDigits: 3,
+        maximumSignificantDigits: 3,
+      });
 
     const showPercentInTooltip =
       !PERCENT_REGEX.test(cols[metricIndex].name) &&
       !PERCENT_REGEX.test(cols[metricIndex].display_name);
 
-    // $FlowFixMe
     let total: number = rows.reduce((sum, row) => sum + row[metricIndex], 0);
 
-    // use standard colors for up to 5 values otherwise use color harmony to help differentiate slices
-    let sliceColors = Object.values(rows.length > 5 ? harmony : normal);
     let sliceThreshold =
       typeof settings["pie.slice_threshold"] === "number"
         ? settings["pie.slice_threshold"] / 100
@@ -147,7 +235,7 @@ export default class PieChart extends Component {
         key: row[dimensionIndex],
         value: row[metricIndex],
         percentage: row[metricIndex] / total,
-        color: sliceColors[index % sliceColors.length],
+        color: settings["pie._colors"][row[dimensionIndex]],
       }))
       .partition(d => d.percentage > sliceThreshold)
       .value();
@@ -160,7 +248,7 @@ export default class PieChart extends Component {
           key: "Other",
           value: otherTotal,
           percentage: otherTotal / total,
-          color: normal.grey1,
+          color: colors["text-light"],
         };
         slices.push(otherSlice);
       }
@@ -177,7 +265,7 @@ export default class PieChart extends Component {
     let legendTitles = slices.map(slice => [
       slice.key === "Other" ? slice.key : formatDimension(slice.key, true),
       settings["pie.show_legend_perecent"]
-        ? formatPercent(slice.percentage)
+        ? formatPercent(slice.percentage, true)
         : undefined,
     ]);
     let legendColors = slices.map(slice => slice.color);
@@ -186,7 +274,7 @@ export default class PieChart extends Component {
     if (slices.length === 0) {
       otherSlice = {
         value: 1,
-        color: normal.grey1,
+        color: colors["text-light"],
         noHover: true,
       };
       slices.push(otherSlice);

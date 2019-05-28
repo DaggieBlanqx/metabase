@@ -2,8 +2,9 @@ import React from "react";
 
 import inflection from "inflection";
 import _ from "underscore";
-import { t } from "c-3po";
+import { t } from "ttag";
 import Utils from "metabase/lib/utils";
+import Field from "metabase-lib/lib/metadata/Field";
 import { getOperators } from "metabase/lib/schema_metadata";
 import { createLookupByProperty } from "metabase/lib/table";
 import { isFK, TYPE } from "metabase/lib/types";
@@ -14,14 +15,13 @@ import * as Table from "./query/table";
 
 import * as Q from "./query/query";
 import * as F from "./query/field";
-import { mbql, mbqlEq } from "./query/util";
 
 export const NEW_QUERY_TEMPLATES = {
   query: {
     database: null,
     type: "query",
     query: {
-      source_table: null,
+      "source-table": null,
     },
   },
   native: {
@@ -41,7 +41,7 @@ export function createQuery(type = "query", databaseId, tableId) {
   }
 
   if (type === "query" && databaseId && tableId) {
-    dataset_query.query.source_table = tableId;
+    dataset_query.query["source-table"] = tableId;
   }
 
   return dataset_query;
@@ -49,9 +49,9 @@ export function createQuery(type = "query", databaseId, tableId) {
 
 const METRIC_NAME_BY_AGGREGATION = {
   count: "count",
-  cum_count: "count",
+  "cum-count": "count",
   sum: "sum",
-  cum_sum: "sum",
+  "cum-sum": "sum",
   distinct: "count",
   avg: "avg",
   min: "min",
@@ -60,9 +60,9 @@ const METRIC_NAME_BY_AGGREGATION = {
 
 const METRIC_TYPE_BY_AGGREGATION = {
   count: TYPE.Integer,
-  cum_count: TYPE.Integer,
+  "cum-count": TYPE.Integer,
   sum: TYPE.Float,
-  cum_sum: TYPE.Float,
+  "cum-sum": TYPE.Float,
   distinct: TYPE.Integer,
   avg: TYPE.Float,
   min: TYPE.Float,
@@ -91,7 +91,7 @@ const Query = {
   canRun(query, tableMetadata) {
     if (
       !query ||
-      query.source_table == null ||
+      query["source-table"] == null ||
       !Query.hasValidAggregation(query)
     ) {
       return false;
@@ -108,7 +108,7 @@ const Query = {
       } else {
         for (const [agg] of aggs) {
           if (
-            !mbqlEq(agg, "metric") &&
+            agg !== "metric" &&
             !_.findWhere(tableMetadata.aggregation_options, { short: agg })
           ) {
             // return false;
@@ -144,18 +144,18 @@ const Query = {
       _.all(filter, a => a != null),
     );
     if (filters.length > 0) {
-      query.filter = ["AND", ...filters];
+      query.filter = ["and", ...filters];
     } else {
       delete query.filter;
     }
 
-    if (query.order_by) {
-      query.order_by = query.order_by
+    if (query["order-by"]) {
+      query["order-by"] = query["order-by"]
         .map(s => {
-          let field = s[0];
+          const [direction, field] = s;
 
           // remove incomplete sorts
-          if (!Query.isValidField(field) || s[1] == null) {
+          if (!Query.isValidField(field) || direction == null) {
             return null;
           }
 
@@ -175,17 +175,17 @@ const Query = {
               Query.isSameField(b, field, false),
             );
             if (targetMatches.length > 0) {
-              // query processor expect the order_by clause to match the breakout's datetime-field unit or fk-> target,
+              // query processor expect the order-by clause to match the breakout's datetime-field unit or fk-> target,
               // so just replace it with the one that matches the target field
               // NOTE: if we have more than one breakout for the same target field this could match the wrong one
               if (targetMatches.length > 1) {
                 console.warn(
                   "Sort clause matches more than one breakout field",
-                  s[0],
+                  field,
                   targetMatches,
                 );
               }
-              return [targetMatches[0], s[1]];
+              return [direction, targetMatches[0]];
             }
           } else if (Query.isBareRows(query)) {
             return s;
@@ -196,8 +196,8 @@ const Query = {
         })
         .filter(s => s != null);
 
-      if (query.order_by.length === 0) {
-        delete query.order_by;
+      if (query["order-by"].length === 0) {
+        delete query["order-by"];
       }
     }
 
@@ -244,12 +244,12 @@ const Query = {
     return (
       aggregations[index] &&
       aggregations[index][0] &&
-      SORTABLE_AGGREGATION_TYPES.has(mbql(aggregations[index][0]))
+      SORTABLE_AGGREGATION_TYPES.has(aggregations[index][0])
     );
   },
 
   isSegmentFilter(filter) {
-    return Array.isArray(filter) && filter[0] === "SEGMENT";
+    return Array.isArray(filter) && filter[0] === "segment";
   },
 
   canAddLimitAndSort(query) {
@@ -342,43 +342,42 @@ const Query = {
       return isExpressionReference(obj)
         ? null
         : obj.constructor === Array
-          ? _.map(obj, removeExpressionReferences)
-          : typeof obj === "object"
-            ? _.mapObject(obj, removeExpressionReferences)
-            : obj;
+        ? _.map(obj, removeExpressionReferences)
+        : typeof obj === "object"
+        ? _.mapObject(obj, removeExpressionReferences)
+        : obj;
     }
 
     return this.cleanQuery(removeExpressionReferences(query));
   },
 
+  // DEPRECATED
   isRegularField(field) {
     return typeof field === "number";
   },
 
   isLocalField(field) {
-    return Array.isArray(field) && mbqlEq(field[0], "field-id");
+    return Array.isArray(field) && field[0] === "field-id";
   },
 
   isForeignKeyField(field) {
-    return Array.isArray(field) && mbqlEq(field[0], "fk->");
+    return Array.isArray(field) && field[0] === "fk->";
   },
 
   isDatetimeField(field) {
-    return Array.isArray(field) && mbqlEq(field[0], "datetime-field");
+    return Array.isArray(field) && field[0] === "datetime-field";
   },
 
   isBinningStrategy: F.isBinningStrategy,
 
   isExpressionField(field) {
     return (
-      Array.isArray(field) &&
-      field.length === 2 &&
-      mbqlEq(field[0], "expression")
+      Array.isArray(field) && field.length === 2 && field[0] === "expression"
     );
   },
 
   isAggregateField(field) {
-    return Array.isArray(field) && mbqlEq(field[0], "aggregation");
+    return Array.isArray(field) && field[0] === "aggregation";
   },
 
   // field literal has the formal ["field-literal", <field-name>, <field-base-type>]
@@ -386,7 +385,7 @@ const Query = {
     return (
       Array.isArray(field) &&
       field.length === 3 &&
-      mbqlEq(field[0], "field-literal") &&
+      field[0] === "field-literal" &&
       _.isString(field[1]) &&
       _.isString(field[2])
     );
@@ -397,8 +396,8 @@ const Query = {
       Query.isRegularField(field) ||
       Query.isLocalField(field) ||
       (Query.isForeignKeyField(field) &&
-        Query.isRegularField(field[1]) &&
-        Query.isRegularField(field[2])) ||
+        (Query.isLocalField(field[1]) || Query.isRegularField(field[1])) &&
+        (Query.isLocalField(field[2]) || Query.isRegularField(field[2]))) ||
       // datetime field can  be either 4-item (deprecated): ["datetime-field", <field>, "as", <unit>]
       // or 3 item (preferred style): ["datetime-field", <field>, <unit>]
       (Query.isDatetimeField(field) &&
@@ -432,6 +431,8 @@ const Query = {
       return Query.getFieldTargetId(field[1]);
     } else if (Query.isBinningStrategy(field)) {
       return Query.getFieldTargetId(field[1]);
+    } else if (Query.isExpressionField(field)) {
+      return field;
     } else if (Query.isFieldLiteral(field)) {
       return field;
     }
@@ -445,8 +446,9 @@ const Query = {
     } else if (Query.isLocalField(field)) {
       return Query.getFieldTarget(field[1], tableDef, path);
     } else if (Query.isForeignKeyField(field)) {
-      let fkFieldDef = Table.getField(tableDef, field[1]);
-      let targetTableDef = fkFieldDef && fkFieldDef.target.table;
+      const fkFieldId = Query.getFieldTargetId(field[1]);
+      const fkFieldDef = Table.getField(tableDef, fkFieldId);
+      const targetTableDef = fkFieldDef && fkFieldDef.target.table;
       return Query.getFieldTarget(
         field[2],
         targetTableDef,
@@ -461,11 +463,14 @@ const Query = {
       return Query.getFieldTarget(field[1], tableDef, path);
     } else if (Query.isExpressionField(field)) {
       // hmmm, since this is a dynamic field we'll need to build this here
-      let fieldDef = {
+      // but base it on Field object, since some functions are used, when adding as filter
+      let fieldDef = new Field({
         display_name: field[1],
         name: field[1],
+        expression_name: field[1],
+        metadata: tableDef.metadata,
         // TODO: we need to do something better here because filtering depends on knowing a sensible type for the field
-        base_type: TYPE.Integer,
+        base_type: TYPE.Float,
         operators_lookup: {},
         operators: [],
         active: true,
@@ -475,7 +480,7 @@ const Query = {
         special_type: null,
         target: null,
         visibility_type: "normal",
-      };
+      });
       fieldDef.operators = getOperators(fieldDef, tableDef);
       fieldDef.operators_lookup = createLookupByProperty(
         fieldDef.operators,
@@ -613,7 +618,7 @@ const Query = {
             return [t`Raw data`];
           case "count":
             return [t`Count`];
-          case "cum_count":
+          case "cum-count":
             return [t`Cumulative count`];
           case "avg":
             return [
@@ -635,7 +640,7 @@ const Query = {
               t`Sum of `,
               Query.getFieldName(tableMetadata, aggregation[1], options),
             ];
-          case "cum_sum":
+          case "cum-sum":
             return [
               t`Cumulative sum of `,
               Query.getFieldName(tableMetadata, aggregation[1], options),
@@ -671,8 +676,8 @@ const Query = {
   },
 
   getFilterDescription(tableMetadata, query, options) {
-    // getFilters returns list of filters without the implied "AND"
-    let filters = ["AND"].concat(Query.getFilters(query));
+    // getFilters returns list of filters without the implied "and"
+    let filters = ["and"].concat(Query.getFilters(query));
     if (filters && filters.length > 1) {
       return [
         t`Filtered by `,
@@ -682,12 +687,12 @@ const Query = {
   },
 
   getFilterClauseDescription(tableMetadata, filter, options) {
-    if (mbqlEq(filter[0], "AND") || mbqlEq(filter[0], "OR")) {
+    if (filter[0] === "and" || filter[0] === "or") {
       let clauses = filter
         .slice(1)
         .map(f => Query.getFilterClauseDescription(tableMetadata, f, options));
       return conjunctList(clauses, filter[0].toLowerCase());
-    } else if (filter[0] === "SEGMENT") {
+    } else if (filter[0] === "segment") {
       let segment = _.findWhere(tableMetadata.segments, { id: filter[1] });
       let name = segment ? segment.name : "[Unknown Segment]";
       return options.jsx ? (
@@ -700,13 +705,17 @@ const Query = {
     }
   },
 
-  getOrderByDescription(tableMetadata, { order_by }, options) {
-    if (order_by && order_by.length > 0) {
+  getOrderByDescription(tableMetadata, query, options) {
+    const orderBy = query["order-by"];
+    if (orderBy && orderBy.length > 0) {
       return [
         t`Sorted by `,
         joinList(
-          order_by.map(
-            o => Query.getFieldName(tableMetadata, o[0], options) + " " + o[1],
+          orderBy.map(
+            ([direction, field]) =>
+              Query.getFieldName(tableMetadata, field, options) +
+              " " +
+              (direction === "asc" ? "ascending" : "descending"),
           ),
           " and ",
         ),
@@ -732,7 +741,7 @@ const Query = {
         "aggregation",
         "breakout",
         "filter",
-        "order_by",
+        "order-by",
         "limit",
       ],
       ...options,
@@ -743,7 +752,7 @@ const Query = {
       aggregation: Query.getAggregationDescription,
       breakout: Query.getBreakoutDescription,
       filter: Query.getFilterDescription,
-      order_by: Query.getOrderByDescription,
+      "order-by": Query.getOrderByDescription,
       limit: Query.getLimitDescription,
     };
 
@@ -816,7 +825,7 @@ import { isMath } from "metabase/lib/expressions";
 
 export const NamedClause = {
   isNamed(clause) {
-    return Array.isArray(clause) && mbqlEq(clause[0], "named");
+    return Array.isArray(clause) && clause[0] === "named";
   },
   getName(clause) {
     return NamedClause.isNamed(clause) ? clause[2] : null;
@@ -852,27 +861,24 @@ export const AggregationClause = {
 
   // predicate function to test if the given aggregation clause represents a Bare Rows aggregation
   isBareRows(aggregation) {
-    return (
-      AggregationClause.isValid(aggregation) && mbqlEq(aggregation[0], "rows")
-    );
+    return AggregationClause.isValid(aggregation) && aggregation[0] === "rows";
   },
 
   // predicate function to test if a given aggregation clause represents a standard aggregation
   isStandard(aggregation) {
     return (
-      AggregationClause.isValid(aggregation) &&
-      !mbqlEq(aggregation[0], "metric")
+      AggregationClause.isValid(aggregation) && aggregation[0] !== "metric"
     );
   },
 
   getAggregation(aggregation) {
-    return aggregation && mbql(aggregation[0]);
+    return aggregation && aggregation[0];
   },
 
   // predicate function to test if a given aggregation clause represents a metric
   isMetric(aggregation) {
     return (
-      AggregationClause.isValid(aggregation) && mbqlEq(aggregation[0], "metric")
+      AggregationClause.isValid(aggregation) && aggregation[0] === "metric"
     );
   },
 
@@ -897,11 +903,7 @@ export const AggregationClause = {
 
   // get the operator from a standard aggregation clause
   getOperator(aggregation) {
-    if (
-      aggregation &&
-      aggregation.length > 0 &&
-      !mbqlEq(aggregation[0], "metric")
-    ) {
+    if (aggregation && aggregation.length > 0 && aggregation[0] !== "metric") {
       return aggregation[0];
     } else {
       return null;
@@ -910,11 +912,7 @@ export const AggregationClause = {
 
   // get the fieldId from a standard aggregation clause
   getField(aggregation) {
-    if (
-      aggregation &&
-      aggregation.length > 1 &&
-      !mbqlEq(aggregation[0], "metric")
-    ) {
+    if (aggregation && aggregation.length > 1 && aggregation[0] !== "metric") {
       return aggregation[1];
     } else {
       return null;
@@ -927,7 +925,7 @@ export const AggregationClause = {
       aggregation &&
       aggregation.length > 0 &&
       aggregation[0] &&
-      aggregation[0] !== "METRIC"
+      aggregation[0] !== "metric"
     ) {
       return [aggregation[0], fieldId];
     } else {

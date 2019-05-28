@@ -6,34 +6,40 @@
             [clj-time
              [core :as t]
              [format :as t.format]]
+            [clojure
+             [string :as str]
+             [walk :as walk]]
             [clojure.math.combinatorics :as combo]
-            [clojure.string :as str]
             [clojure.tools.logging :as log]
-            [clojure.walk :as walk]
             [kixi.stats
              [core :as stats]
              [math :as math]]
             [medley.core :as m]
+            [metabase
+             [driver :as driver]
+             [related :as related]
+             [util :as u]]
             [metabase.automagic-dashboards
              [filters :as filters]
              [populate :as populate]
              [rules :as rules]]
+            [metabase.mbql
+             [normalize :as normalize]
+             [util :as mbql.u]]
             [metabase.models
              [card :as card :refer [Card]]
              [database :refer [Database]]
-             [field :refer [Field] :as field]
+             [field :as field :refer [Field]]
              [interface :as mi]
-             [metric :refer [Metric] :as metric]
+             [metric :as metric :refer [Metric]]
              [query :refer [Query]]
              [segment :refer [Segment]]
              [table :refer [Table]]]
-            [metabase.query-processor.middleware.expand-macros :refer [merge-filter-clauses]]
             [metabase.query-processor.util :as qp.util]
-            [metabase.related :as related]
             [metabase.sync.analyze.classify :as classify]
-            [metabase.util :as u]
-            [metabase.util.date :as date]
-            [puppetlabs.i18n.core :as i18n :refer [tru trs]]
+            [metabase.util
+             [date :as date]
+             [i18n :as ui18n :refer [trs tru]]]
             [ring.util.codec :as codec]
             [schema.core :as s]
             [toucan.db :as db])
@@ -44,21 +50,26 @@
 (def ^:private ^{:arglists '([field])} id-or-name
   (some-fn :id :name))
 
-(defn- ->field
+(defn ->field
+  "Return `Field` instance for a given ID or name in the context of root."
   [root id-or-name]
-  (if (->> root :source (instance? (type Table)))
-    (Field id-or-name)
-    (when-let [field (->> root
-                     :source
-                     :result_metadata
-                     (m/find-first (comp #{id-or-name} :name)))]
-      (-> field
-          (update :base_type keyword)
-          (update :special_type keyword)
-          field/map->FieldInstance
-          (classify/run-classifiers {})))))
+  (let [id-or-name (if (sequential? id-or-name)
+                     (filters/field-reference->id id-or-name)
+                     id-or-name)]
+    (if (->> root :source (instance? (type Table)))
+      (Field id-or-name)
+      (when-let [field (->> root
+                            :source
+                            :result_metadata
+                            (m/find-first (comp #{id-or-name} :name)))]
+        (-> field
+            (update :base_type keyword)
+            (update :special_type keyword)
+            field/map->FieldInstance
+            (classify/run-classifiers {}))))))
 
-(def ^:private ^{:arglists '([root])} source-name
+(def ^{:arglists '([root])} source-name
+  "Return the (display) name of the soruce of a given root object."
   (comp (some-fn :display_name :name) :source))
 
 (def ^:private op->name
@@ -73,20 +84,30 @@
    :cum-sum   (tru "cumulative sum")})
 
 (def ^:private ^{:arglists '([metric])} saved-metric?
-  (comp #{:metric} qp.util/normalize-token first))
+  (every-pred (partial mbql.u/is-clause? :metric)
+              (complement mbql.u/ga-metric-or-segment?)))
 
 (def ^:private ^{:arglists '([metric])} custom-expression?
-  (comp #{:named} qp.util/normalize-token first))
+  (partial mbql.u/is-clause? :named))
 
 (def ^:private ^{:arglists '([metric])} adhoc-metric?
   (complement (some-fn saved-metric? custom-expression?)))
 
-(defn- metric-name
+(defn metric-name
+  "Return the name of the metric or name by describing it."
   [[op & args :as metric]]
   (cond
-    (adhoc-metric? metric) (-> op qp.util/normalize-token op->name)
-    (saved-metric? metric) (-> args first Metric :name)
-    :else                  (second args)))
+    (mbql.u/ga-metric-or-segment? metric) (-> args first str (subs 3) str/capitalize)
+    (adhoc-metric? metric)                (-> op qp.util/normalize-token op->name)
+    (saved-metric? metric)                (-> args first Metric :name)
+    :else                                 (second args)))
+
+(defn metric-op
+  "Return the name op of the metric"
+  [[op & args :as metric]]
+  (if (saved-metric? metric)
+    (-> args first Metric (get-in [:definition :aggregation 0 0]))
+    op))
 
 (defn- join-enumeration
   [xs]
@@ -103,7 +124,6 @@
      (if (adhoc-metric? metric)
        (tru "{0} of {1}" (metric-name metric) (or (some->> metric
                                                            second
-                                                           filters/field-reference->id
                                                            (->field root)
                                                            :display_name)
                                                   (source-name root)))
@@ -111,30 +131,34 @@
 
 (defn- question-description
   [root question]
-  (let [aggregations (->> (qp.util/get-in-normalized question [:dataset_query :query :aggregation])
+  (let [aggregations (->> (get-in question [:dataset_query :query :aggregation])
                           (metric->description root))
-        dimensions   (->> (qp.util/get-in-normalized question [:dataset_query :query :breakout])
+        dimensions   (->> (get-in question [:dataset_query :query :breakout])
                           (mapcat filters/collect-field-references)
                           (map (comp :display_name
-                                     (partial ->field root)
-                                     filters/field-reference->id))
+                                     (partial ->field root)))
                           join-enumeration)]
     (if dimensions
       (tru "{0} by {1}" aggregations dimensions)
       aggregations)))
 
-(def ^:private ^{:arglists '([x])} encode-base64-json
+(def ^{:arglists '([x])} encode-base64-json
+  "Encode given object as base-64 encoded JSON."
   (comp codec/base64-encode codecs/str->bytes json/encode))
 
+(defn- ga-table?
+  [table]
+  (isa? (:entity_type table) :entity/GoogleAnalyticsTable))
+
 (defmulti
-  ^{:private  true
+  ^{:doc ""
     :arglists '([entity])}
   ->root type)
 
 (defmethod ->root (type Table)
   [table]
   {:entity       table
-   :full-name    (if (isa? (:entity_type table) :entity/GoogleAnalyticsTable)
+   :full-name    (if (ga-table? table)
                    (:display_name table)
                    (tru "{0} table" (:display_name table)))
    :short-name   (:display_name table)
@@ -146,14 +170,15 @@
 (defmethod ->root (type Segment)
   [segment]
   (let [table (-> segment :table_id Table)]
-    {:entity       segment
-     :full-name    (tru "{0} in the {1} segment" (:display_name table) (:name segment))
-     :short-name   (:display_name table)
-     :source       table
-     :database     (:db_id table)
-     :query-filter [:SEGMENT (u/get-id segment)]
-     :url          (format "%ssegment/%s" public-endpoint (u/get-id segment))
-     :rules-prefix ["table"]}))
+    {:entity          segment
+     :full-name       (tru "{0} in the {1} segment" (:display_name table) (:name segment))
+     :short-name      (:display_name table)
+     :comparison-name (tru "{0} segment" (:name segment))
+     :source          table
+     :database        (:db_id table)
+     :query-filter    [:segment (u/get-id segment)]
+     :url             (format "%ssegment/%s" public-endpoint (u/get-id segment))
+     :rules-prefix    ["table"]}))
 
 (defmethod ->root (type Metric)
   [metric]
@@ -187,18 +212,24 @@
   (comp qp.util/query->source-card-id :dataset_query))
 
 (def ^:private ^{:arglists '([card-or-question])} native-query?
-  (comp #{:native} qp.util/normalize-token #(qp.util/get-in-normalized % [:dataset_query :type])))
+  (comp #{:native} qp.util/normalize-token #(get-in % [:dataset_query :type])))
 
 (def ^:private ^{:arglists '([card-or-question])} source-question
   (comp Card qp.util/query->source-card-id :dataset_query))
 
 (defn- table-like?
   [card-or-question]
-  (let [[aggregation & _] (qp.util/get-in-normalized card-or-question [:dataset_query :query :aggregation])]
-    (or (nil? aggregation)
-        (and (or (string? aggregation)
-                 (keyword? aggregation))
-             (= (qp.util/normalize-token aggregation) :rows)))))
+  (nil? (get-in card-or-question [:dataset_query :query :aggregation])))
+
+(defn- table-id
+  "Get the Table ID from `card-or-question`, which can be either a Card from the DB (which has a `:table_id` property)
+  or an ad-hoc query (referred to as a 'question' in this namespace) created with the
+  `metabase.models.query/adhoc-query` function, which has a `:table-id` property."
+  ;; TODO - probably better if we just changed `adhoc-query` to use the same keys as Cards (e.g. `:table_id`) so we
+  ;; didn't need this function, seems like something that would be too easy to forget
+  [card-or-question]
+  (or (:table_id card-or-question)
+      (:table-id card-or-question)))
 
 (defn- source
   [card]
@@ -207,7 +238,7 @@
                              source-question
                              (assoc :entity_type :entity/GenericTable))
     (native-query? card) (-> card (assoc :entity_type :entity/GenericTable))
-    :else                (-> card (qp.util/get-normalized :table-id) Table)))
+    :else                (-> card table-id Table)))
 
 (defmethod ->root (type Card)
   [card]
@@ -215,7 +246,7 @@
     {:entity       card
      :source       source
      :database     (:database_id card)
-     :query-filter (qp.util/get-in-normalized card [:dataset_query :query :filter])
+     :query-filter (get-in card [:dataset_query :query :filter])
      :full-name    (tru "\"{0}\" question" (:name card))
      :short-name   (source-name {:source source})
      :url          (format "%squestion/%s" public-endpoint (u/get-id card))
@@ -229,7 +260,7 @@
     {:entity       query
      :source       source
      :database     (:database-id query)
-     :query-filter (qp.util/get-in-normalized query [:dataset_query :query :filter])
+     :query-filter (get-in query [:dataset_query :query :filter])
      :full-name    (cond
                      (native-query? query) (tru "Native query")
                      (table-like? query)   (-> source ->root :full-name)
@@ -255,7 +286,7 @@
                                       :type
                                       :type/DateTime
                                       ((juxt :earliest :latest))
-                                      (map t.format/parse))]
+                                      (map date/str->date-time))]
     (condp > (t/in-hours (t/interval earliest latest))
       3               :minute
       (* 24 7)        :hour
@@ -265,7 +296,7 @@
     :day))
 
 (defmethod ->reference [:mbql (type Field)]
-  [_ {:keys [fk_target_field_id id link aggregation fingerprint name base_type] :as field}]
+  [_ {:keys [fk_target_field_id id link aggregation name base_type] :as field}]
   (let [reference (cond
                     link               [:fk-> link id]
                     fk_target_field_id [:fk-> id fk_target_field_id]
@@ -277,8 +308,7 @@
                                      (optimal-datetime-resolution field))]
 
       (and aggregation
-           ; We don't handle binning on non-analyzed fields gracefully
-           (-> fingerprint :type :type/Number :min))
+           (isa? base_type :type/Number))
       [:binning-strategy reference aggregation]
 
       :else
@@ -299,7 +329,7 @@
 (defmethod ->reference [:mbql (type Metric)]
   [_ {:keys [id definition]}]
   (if id
-    ["METRIC" id]
+    [:metric id]
     (-> definition :aggregation first)))
 
 (defmethod ->reference [:native (type Field)]
@@ -388,9 +418,9 @@
                  (fn [[_ identifier attribute]]
                    (let [entity    (bindings identifier)
                          attribute (some-> attribute qp.util/normalize-token)]
-                     (or (and (ifn? entity) (entity attribute))
-                         (root attribute)
-                         (->reference template-type entity)))))))
+                     (str (or (and (ifn? entity) (entity attribute))
+                              (root attribute)
+                              (->reference template-type entity))))))))
 
 (defn- field-candidates
   [context {:keys [field_type links_to named max_cardinality] :as constraints}]
@@ -461,40 +491,45 @@
   [dimensions metrics order-by]
   (let [dimensions (set dimensions)]
     (for [[identifier ordering] (map first order-by)]
-      [(if (dimensions identifier)
-          [:dimension identifier]
-          [:aggregation (u/index-of #{identifier} metrics)])
-        (if (= ordering "ascending")
-          :ascending
-          :descending)])))
+      [(if (= ordering "ascending")
+         :asc
+         :desc)
+       (if (dimensions identifier)
+         [:dimension identifier]
+         [:aggregation (u/index-of #{identifier} metrics)])])))
 
 (defn- build-query
   ([context bindings filters metrics dimensions limit order_by]
-   (qp.util/postwalk-pred
-    rules/dimension-form?
-    (fn [[_ identifier opts]]
-      (->reference :mbql (-> identifier bindings (merge opts))))
+   (walk/postwalk
+    (fn [subform]
+      (if (rules/dimension-form? subform)
+        (let [[_ identifier opts] subform]
+          (->reference :mbql (-> identifier bindings (merge opts))))
+        subform))
     {:type     :query
      :database (-> context :root :database)
-     :query    (cond-> {:source_table (if (->> context :source (instance? (type Table)))
+     :query    (cond-> {:source-table (if (->> context :source (instance? (type Table)))
                                         (-> context :source u/get-id)
                                         (->> context :source u/get-id (str "card__")))}
-                 (not-empty filters)
-                 (assoc :filter (->> filters
-                                     (map :filter)
-                                     (apply merge-filter-clauses)))
+                 (seq filters)
+                 (assoc :filter (apply
+                                 vector
+                                 :and
+                                 (map (comp (partial normalize/normalize-fragment [:query :filter])
+                                            :filter)
+                                      filters)))
 
-                 (not-empty dimensions)
+                 (seq dimensions)
                  (assoc :breakout dimensions)
 
-                 (not-empty metrics)
+                 (seq metrics)
                  (assoc :aggregation (map :metric metrics))
 
                  limit
                  (assoc :limit limit)
 
-                 (not-empty order_by)
-                 (assoc :order_by order_by))}))
+                 (seq order_by)
+                 (assoc :order-by order_by))}))
   ([context bindings query]
    {:type     :native
     :native   {:query (fill-templates :native context bindings query)}
@@ -507,8 +542,8 @@
        (every? (partial get dimensions))))
 
 (defn- resolve-overloading
-  "Find the overloaded definition with the highest `score` for which all
-   referenced dimensions have at least one matching field."
+  "Find the overloaded definition with the highest `score` for which all referenced dimensions have at least one
+  matching field."
   [{:keys [dimensions]} definitions]
   (apply merge-with (fn [a b]
                       (case (map (partial has-matches? dimensions) [a b])
@@ -527,27 +562,32 @@
            (u/update-when :graph.metrics metric->name)
            (u/update-when :graph.dimensions dimension->name))]))
 
-(defn- capitalize-first
+(defn capitalize-first
+  "Capitalize only the first letter in a given string."
   [s]
-  (str (str/upper-case (subs s 0 1)) (subs s 1)))
+  (let [s (str s)]
+    (str (str/upper-case (subs s 0 1)) (subs s 1))))
 
 (defn- instantiate-metadata
   [x context bindings]
   (-> (walk/postwalk
        (fn [form]
-         (if (string? form)
-           (let [new-form (fill-templates :string context bindings form)]
-             (if (not= new-form form)
-               (capitalize-first new-form)
-               new-form))
+         (if (ui18n/localized-string? form)
+           (let [s     (str form)
+                 new-s (fill-templates :string context bindings s)]
+             (if (not= new-s s)
+               (capitalize-first new-s)
+               s))
            form))
        x)
       (u/update-when :visualization #(instantate-visualization % bindings (:metrics context)))))
 
 (defn- valid-breakout-dimension?
-  [{:keys [base_type engine]}]
-  (not (and (isa? base_type :type/Number)
-            (= engine :druid))))
+  [{:keys [base_type engine fingerprint aggregation]}]
+  (or (nil? aggregation)
+      (not (isa? base_type :type/Number))
+      (and (driver/supports? engine :binning)
+           (-> fingerprint :type :type/Number :min))))
 
 (defn- singular-cell-dimensions
   [root]
@@ -588,7 +628,8 @@
          (map (partial zipmap used-dimensions))
          (filter (fn [bindings]
                    (->> dimensions
-                        (map (comp bindings second))
+                        (map (fn [[_ identifier opts]]
+                               (merge (bindings identifier) opts)))
                         (every? (every-pred valid-breakout-dimension?
                                             (complement (comp cell-dimension? id-or-name)))))))
          (map (fn [bindings]
@@ -606,7 +647,10 @@
                                                          (zipmap (:metrics card))
                                                          (merge bindings)))
                       (assoc :dataset_query query
-                             :metrics       (map (some-fn :name (comp metric-name :metric)) metrics)
+                             :metrics       (for [metric metrics]
+                                              {:name ((some-fn :name (comp metric-name :metric)) metric)
+                                               :op   (-> metric :metric metric-op)})
+                             :dimensions    (map (comp :name bindings second) dimensions)
                              :score         score))))))))
 
 (defn- matching-rules
@@ -630,10 +674,14 @@
   [table]
   (for [{:keys [id target]} (field/with-targets
                               (db/select Field
-                                         :table_id           (u/get-id table)
-                                         :fk_target_field_id [:not= nil]))
+                                :table_id           (u/get-id table)
+                                :fk_target_field_id [:not= nil]
+                                :active             true))
         :when (some-> target mi/can-read?)]
     (-> target field/table (assoc :link id))))
+
+(def ^:private ^{:arglists '([source])} source->engine
+  (comp :engine Database (some-fn :db_id :database_id)))
 
 (defmulti
   ^{:private  true
@@ -642,10 +690,12 @@
 
 (defmethod inject-root (type Field)
   [context field]
-  (let [field (assoc field :link (->> context
-                                      :tables
-                                      (m/find-first (comp #{(:table_id field)} u/get-id))
-                                      :link))]
+  (let [field (assoc field
+                :link   (->> context
+                             :tables
+                             (m/find-first (comp #{(:table_id field)} u/get-id))
+                             :link)
+                :engine (-> context :source source->engine))]
     (update context :dimensions
             (fn [dimensions]
               (->> dimensions
@@ -676,11 +726,12 @@
   (let [source        (:source root)
         tables        (concat [source] (when (instance? (type Table) source)
                                          (linked-tables source)))
-        engine        (-> source ((some-fn :db_id :database_id)) Database :engine)
+        engine        (source->engine source)
         table->fields (if (instance? (type Table) source)
                         (comp (->> (db/select Field
-                                              :table_id        [:in (map u/get-id tables)]
-                                              :visibility_type "normal")
+                                     :table_id        [:in (map u/get-id tables)]
+                                     :visibility_type "normal"
+                                     :active          true)
                                    field/with-targets
                                    (map #(assoc % :engine engine))
                                    (group-by :table_id))
@@ -725,6 +776,10 @@
   ([root rule context]
    (-> rule
        (select-keys [:title :description :transient_title :groups])
+       (cond->
+         (:comparison? root)
+         (update :groups (partial m/map-vals (fn [{:keys [title comparison_title] :as group}]
+                                               (assoc group :title (or comparison_title title))))))
        (instantiate-metadata context {}))))
 
 (s/defn ^:private apply-rule
@@ -744,10 +799,11 @@
        rule
        context])))
 
-(def ^:private ^:const ^Long max-related 6)
+(def ^:private ^:const ^Long max-related 8)
 (def ^:private ^:const ^Long max-cards 15)
 
-(defn- ->related-entity
+(defn ->related-entity
+  "Turn `entity` into an entry in `:related.`"
   [entity]
   (let [root      (->root entity)
         rule      (->> root
@@ -778,72 +834,122 @@
 
 (defn- drilldown-fields
   [context]
-  (->> context
-       :dimensions
-       vals
-       (mapcat :matches)
-       filters/interesting-fields
-       (map ->related-entity)
-       (hash-map :drilldown-fields)))
+  (when (and (->> context :root :source (instance? (type Table)))
+             (-> context :root :entity ga-table? not))
+    (->> context
+         :dimensions
+         vals
+         (mapcat :matches)
+         filters/interesting-fields
+         (map ->related-entity)
+         (hash-map :drilldown-fields))))
+
+(defn- comparisons
+  [root]
+  {:compare (concat
+             (for [segment (->> root :entity related/related :segments (map ->root))]
+               {:url         (str (:url root) "/compare/segment/" (-> segment :entity u/get-id))
+                :title       (tru "Compare with {0}" (:comparison-name segment))
+                :description ""})
+             (when ((some-fn :query-filter :cell-query) root)
+               [{:url         (if (->> root :source (instance? (type Table)))
+                                (str (:url root) "/compare/table/" (-> root :source u/get-id))
+                                (str (:url root) "/compare/adhoc/"
+                                     (encode-base64-json
+                                      {:database (:database root)
+                                       :type     :query
+                                       :query    {:source-table (->> root
+                                                                     :source
+                                                                     u/get-id
+                                                                     (str "card__" ))}})))
+                 :title       (tru "Compare with entire dataset")
+                 :description ""}]))})
 
 (defn- fill-related
   "We fill available slots round-robin style. Each selector is a list of fns that are tried against
-   `related` in sequence until one matches. Matching items are stored in a map so we can later
-   reconstruct ordering and group items by selector."
+   `related` in sequence until one matches."
   [available-slots selectors related]
-  (let [pop-first (fn [m ks]
-                    (loop [[k & ks] ks]
-                      (let [item (-> k m first)]
-                        (cond
-                          item        [item k (update m k rest)]
-                          (empty? ks) [nil nil m]
-                          :else       (recur ks)))))]
-    (loop [[selector & remaining-selectors] selectors
-           related                          related
-           selected                         []]
-      (let [[next selector related] (pop-first related (mapcat shuffle selector))
-            num-selected            (count selected)]
-        (cond
-          (= num-selected available-slots)
-          selected
+  (let [pop-first         (fn [m ks]
+                            (loop [[k & ks] ks]
+                              (let [item (-> k m first)]
+                                (cond
+                                  item        [item (update m k rest)]
+                                  (empty? ks) [nil m]
+                                  :else       (recur ks)))))
+        count-leafs        (comp count (partial mapcat val))
+        [selected related] (reduce-kv
+                            (fn [[selected related] k v]
+                              (loop [[selector & remaining-selectors] v
+                                     related                          related
+                                     selected                         selected]
+                                (let [[next related] (pop-first related (mapcat shuffle selector))
+                                      num-selected   (count-leafs selected)]
+                                  (cond
+                                    (= num-selected available-slots)
+                                    (reduced [selected related])
 
-          next
-          (recur remaining-selectors related (conj selected {:entity   next
-                                                             :selector selector}))
+                                    next
+                                    (recur remaining-selectors related (update selected k conj next))
 
-          (and (empty? remaining-selectors)
-               (empty? selected))
-          {}
+                                    (empty? remaining-selectors)
+                                    [selected related]
 
-          (empty? remaining-selectors)
-          (concat selected (fill-related (- available-slots num-selected) selectors related))
-
-          :else
-          (recur remaining-selectors related selected))))))
+                                    :else
+                                    (recur remaining-selectors related selected)))))
+                            [{} related]
+                            selectors)
+        num-selected (count-leafs selected)]
+    (if (pos? num-selected)
+      (merge-with concat
+        selected
+        (fill-related (- available-slots num-selected) selectors related))
+      {})))
 
 (def ^:private related-selectors
   {(type Table)   (let [down     [[:indepth] [:segments :metrics] [:drilldown-fields]]
-                        sideways [[:linking-to :linked-from] [:tables]]]
-                    [down down down down sideways sideways])
+                        sideways [[:linking-to :linked-from] [:tables]]
+                        compare  [[:compare]]]
+                    {:zoom-in [down down down down]
+                     :related [sideways sideways]
+                     :compare [compare compare]})
    (type Segment) (let [down     [[:indepth] [:segments :metrics] [:drilldown-fields]]
                         sideways [[:linking-to] [:tables]]
-                        up       [[:table]]]
-                    [down down down sideways sideways up])
+                        up       [[:table]]
+                        compare  [[:compare]]]
+                    {:zoom-in  [down down down]
+                     :zoom-out [up]
+                     :related  [sideways sideways]
+                     :compare  [compare compare]})
    (type Metric)  (let [down     [[:drilldown-fields]]
                         sideways [[:metrics :segments]]
-                        up       [[:table]]]
-                    [sideways sideways sideways down down up])
+                        up       [[:table]]
+                        compare  [[:compare]]]
+                    {:zoom-in  [down down]
+                     :zoom-out [up]
+                     :related  [sideways sideways sideways]
+                     :compare  [compare compare]})
    (type Field)   (let [sideways [[:fields]]
-                        up       [[:table] [:metrics :segments]]]
-                    [sideways sideways up])
+                        up       [[:table] [:metrics :segments]]
+                        compare  [[:compare]]]
+                    {:zoom-out [up]
+                     :related  [sideways sideways]
+                     :compare  [compare]})
    (type Card)    (let [down     [[:drilldown-fields]]
                         sideways [[:metrics] [:similar-questions :dashboard-mates]]
-                        up       [[:table]]]
-                    [sideways sideways sideways down down up])
+                        up       [[:table]]
+                        compare  [[:compare]]]
+                    {:zoom-in  [down down]
+                     :zoom-out [up]
+                     :related  [sideways sideways sideways]
+                     :compare  [compare compare]})
    (type Query)   (let [down     [[:drilldown-fields]]
                         sideways [[:metrics] [:similar-questions]]
-                        up       [[:table]]]
-                    [sideways sideways sideways down down up])})
+                        up       [[:table]]
+                        compare  [[:compare]]]
+                    {:zoom-in  [down down]
+                     :zoom-out [up]
+                     :related  [sideways sideways sideways]
+                     :compare  [compare compare]})})
 
 (s/defn ^:private related
   "Build a balanced list of related X-rays. General composition of the list is determined for each
@@ -851,10 +957,9 @@
   [{:keys [root] :as context}, rule :- (s/maybe rules/Rule)]
   (->> (merge (indepth root rule)
               (drilldown-fields context)
-              (related-entities root))
-       (fill-related max-related (related-selectors (-> root :entity type)))
-       (group-by :selector)
-       (m/map-vals (partial map :entity))))
+              (related-entities root)
+              (comparisons root))
+       (fill-related max-related (related-selectors (-> root :entity type)))))
 
 (defn- filter-referenced-fields
   "Return a map of fields referenced in filter cluase."
@@ -880,15 +985,15 @@
                                            ;; (no chunking).
                                            first))]
     (let [show (or show max-cards)]
-      (log/infof (trs "Applying heuristic %s to %s.") (:rule rule) full-name)
-      (log/infof (trs "Dimensions bindings:\n%s")
-                 (->> context
-                      :dimensions
-                      (m/map-vals #(update % :matches (partial map :name)))
-                      u/pprint-to-str))
-      (log/infof (trs "Using definitions:\nMetrics:\n%s\nFilters:\n%s")
-                 (-> context :metrics u/pprint-to-str)
-                 (-> context :filters u/pprint-to-str))
+      (log/infof (str (trs "Applying heuristic {0} to {1}." (:rule rule) full-name)))
+      (log/infof (str (trs "Dimensions bindings:\n{0}"
+                           (->> context
+                                :dimensions
+                                (m/map-vals #(update % :matches (partial map :name)))
+                                u/pprint-to-str))))
+      (log/infof (str (trs "Using definitions:\nMetrics:\n{0}\nFilters:\n{1}"
+                           (->> context :metrics (m/map-vals :metric) u/pprint-to-str)
+                           (-> context :filters u/pprint-to-str))))
       (-> dashboard
           (populate/create-dashboard show)
           (assoc :related           (related context rule)
@@ -897,7 +1002,7 @@
                                       (format "%s#show=all" (:url root)))
                  :transient_filters (:query-filter context)
                  :param_fields      (->> context :query-filter (filter-referenced-fields root)))))
-    (throw (ex-info (trs "Can''t create dashboard for {0}" full-name)
+    (throw (ui18n/ex-info (trs "Can''t create dashboard for {0}" full-name)
              {:root            root
               :available-rules (map :rule (or (some-> rule rules/get-rule vector)
                                               (rules/get-rules rules-prefix)))}))))
@@ -928,20 +1033,19 @@
                  qp.util/normalize-token
                  (= :metric))
            (-> aggregation-clause second Metric)
-           (let [table-id (qp.util/get-normalized question :table-id)]
+           (let [table-id (table-id question)]
              (metric/map->MetricInstance {:definition {:aggregation  [aggregation-clause]
-                                                       :source_table table-id}
+                                                       :source-table table-id}
                                           :name       (metric->description root aggregation-clause)
                                           :table_id   table-id}))))
-       (qp.util/get-in-normalized question [:dataset_query :query :aggregation])))
+       (get-in question [:dataset_query :query :aggregation])))
 
 (defn- collect-breakout-fields
   [root question]
   (map (comp (partial ->field root)
-             filters/field-reference->id
              first
              filters/collect-field-references)
-       (qp.util/get-in-normalized question [:dataset_query :query :breakout])))
+       (get-in question [:dataset_query :query :breakout])))
 
 (defn- decompose-question
   [root question opts]
@@ -994,7 +1098,6 @@
   (cond-> (->> field-reference
                filters/collect-field-references
                first
-               filters/field-reference->id
                (->field root))
     (-> field-reference first qp.util/normalize-token (= :datetime-field))
     (assoc :unit (-> field-reference last qp.util/normalize-token))))
@@ -1005,14 +1108,14 @@
   humanize-filter-value (fn [_ [op & args]]
                           (qp.util/normalize-token op)))
 
-(def ^:private unit-name (comp {:minute-of-hour  "minute"
-                                :hour-of-day     "hour"
-                                :day-of-week     "day of week"
-                                :day-of-month    "day of month"
-                                :day-of-year     "day of year"
-                                :week-of-year    "week"
-                                :month-of-year   "month"
-                                :quarter-of-year "quarter"}
+(def ^:private unit-name (comp {:minute-of-hour  (tru "minute")
+                                :hour-of-day     (tru "hour")
+                                :day-of-week     (tru "day of week")
+                                :day-of-month    (tru "day of month")
+                                :day-of-year     (tru "day of year")
+                                :week-of-year    (tru "week")
+                                :month-of-year   (tru "month")
+                                :quarter-of-year (tru "quarter")}
                                qp.util/normalize-token))
 
 (defn- field-name
@@ -1020,14 +1123,14 @@
    (->> field-reference (field-reference->field root) field-name))
   ([{:keys [display_name unit] :as field}]
    (cond->> display_name
-     (and (filters/periodic-datetime? field) unit) (format "%s of %s" (unit-name unit)))))
+     (some-> unit date/date-extract-units) (tru "{0} of {1}" (unit-name unit)))))
 
 (defmethod humanize-filter-value :=
   [root [_ field-reference value]]
   (let [field      (field-reference->field root field-reference)
         field-name (field-name field)]
-    (if (or (filters/datetime? field)
-            (filters/periodic-datetime? field))
+    (if (or (isa? (:base_type field) :type/DateTime)
+            (field/unix-timestamp? field))
       (tru "{0} is {1}" field-name (humanize-datetime value (:unit field)))
       (tru "{0} is {1}" field-name value))))
 
@@ -1047,10 +1150,12 @@
        (map (partial humanize-filter-value root))
        join-enumeration))
 
-(defn- cell-title
+(defn cell-title
+  "Return a cell title given a root object and a cell query."
   [root cell-query]
-  (str/join " " [(->> (qp.util/get-in-normalized (-> root :entity) [:dataset_query :query :aggregation])
-                      (metric->description root))
+  (str/join " " [(if-let [aggregation (get-in root [:entity :dataset_query :query :aggregation])]
+                   (metric->description root aggregation)
+                   (:full-name root))
                  (tru "where {0}" (humanize-filter-value root cell-query))]))
 
 (defmethod automagic-analysis (type Card)
@@ -1067,11 +1172,11 @@
                                    :rules-prefix ["table"]}))
               opts))
       (let [opts (assoc opts :show :all)]
-        (cond-> (apply populate/merge-dashboards
-                       (automagic-dashboard (merge (cond-> root
-                                                     cell-query (assoc :url cell-url))
-                                                   opts))
-                       (decompose-question root card opts))
+        (cond-> (reduce populate/merge-dashboards
+                        (automagic-dashboard (merge (cond-> root
+                                                      cell-query (assoc :url cell-url))
+                                                    opts))
+                        (decompose-question root card opts))
           cell-query (merge (let [title (tru "A closer look at {0}" (cell-title root cell-query))]
                               {:transient_name  title
                                :name            title})))))))
@@ -1090,10 +1195,10 @@
                                    :rules-prefix ["table"]}))
               opts))
       (let [opts (assoc opts :show :all)]
-        (cond-> (apply populate/merge-dashboards
-                       (automagic-dashboard (merge (cond-> root
-                                                     cell-query (assoc :url cell-url))
-                                                   opts))
+        (cond-> (reduce populate/merge-dashboards
+                        (automagic-dashboard (merge (cond-> root
+                                                      cell-query (assoc :url cell-url))
+                                                    opts))
                        (decompose-question root query opts))
           cell-query (merge (let [title (tru "A closer look at the {0}" (cell-title root cell-query))]
                               {:transient_name  title
@@ -1108,7 +1213,8 @@
   (when (not-empty tables)
     (let [field-count (->> (db/query {:select   [:table_id [:%count.* "count"]]
                                       :from     [Field]
-                                      :where    [:in :table_id (map u/get-id tables)]
+                                      :where    [:and [:in :table_id (map u/get-id tables)]
+                                                 [:= :active true]]
                                       :group-by [:table_id]})
                            (into {} (map (juxt :table_id :count))))
           list-like?  (->> (when-let [candidates (->> field-count
@@ -1118,14 +1224,17 @@
                              (db/query {:select   [:table_id]
                                         :from     [Field]
                                         :where    [:and [:in :table_id candidates]
+                                                   [:= :active true]
                                                    [:or [:not= :special_type "type/PK"]
                                                     [:= :special_type nil]]]
                                         :group-by [:table_id]
                                         :having   [:= :%count.* 1]}))
                            (into #{} (map :table_id)))
+          ;; Table comprised entierly of join keys
           link-table? (->> (db/query {:select   [:table_id [:%count.* "count"]]
                                       :from     [Field]
                                       :where    [:and [:in :table_id (keys field-count)]
+                                                 [:= :active true]
                                                  [:in :special_type ["type/PK" "type/FK"]]]
                                       :group-by [:table_id]})
                            (filter (fn [{:keys [table_id count]}]
@@ -1156,11 +1265,12 @@
    (let [rules (rules/get-rules ["table"])]
      (->> (apply db/select [Table :id :schema :display_name :entity_type :db_id]
                  (cond-> [:db_id           (u/get-id database)
-                          :visibility_type nil]
+                          :visibility_type nil
+                          :active          true]
                    schema (concat [:schema schema])))
           (filter mi/can-read?)
           enhance-table-stats
-          (remove (comp (some-fn :link-table? :list-like? (comp zero? :num-fields)) :stats))
+          (remove (comp (some-fn :link-table? (comp zero? :num-fields)) :stats))
           (map (fn [table]
                  (let [root      (->root table)
                        rule      (->> root
@@ -1170,7 +1280,10 @@
                    {:url         (format "%stable/%s" public-endpoint (u/get-id table))
                     :title       (:full-name root)
                     :score       (+ (math/sq (:specificity rule))
-                                    (math/log (-> table :stats :num-fields)))
+                                    (math/log (-> table :stats :num-fields))
+                                    (if (-> table :stats :list-like?)
+                                      -10
+                                      0))
                     :description (:description dashboard)
                     :table       table
                     :rule        (:rule rule)})))

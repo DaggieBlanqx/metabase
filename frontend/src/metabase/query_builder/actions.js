@@ -5,7 +5,7 @@ declare var ace: any;
 
 import { createAction } from "redux-actions";
 import _ from "underscore";
-import { assocIn } from "icepick";
+import { updateIn } from "icepick";
 
 import * as Urls from "metabase/lib/urls";
 
@@ -22,6 +22,7 @@ import {
   cleanCopyCard,
   urlForCardState,
 } from "metabase/lib/card";
+import { open, shouldOpenInBlankWindow } from "metabase/lib/dom";
 import { formatSQL } from "metabase/lib/formatting";
 import Query, { createQuery } from "metabase/lib/query";
 import { syncQueryFields, getExistingFields } from "metabase/lib/dataset";
@@ -46,7 +47,6 @@ import {
 } from "./selectors";
 
 import {
-  getDatabases,
   getTables,
   getDatabasesList,
   getMetadata,
@@ -63,7 +63,7 @@ import { getCardAfterVisualizationClick } from "metabase/visualizations/lib/util
 import type { Card } from "metabase/meta/types/Card";
 import StructuredQuery from "metabase-lib/lib/queries/StructuredQuery";
 import NativeQuery from "metabase-lib/lib/queries/NativeQuery";
-import { getPersistableDefaultSettings } from "metabase/visualizations/lib/settings";
+import { getPersistableDefaultSettingsForSeries } from "metabase/visualizations/lib/settings/visualization";
 import { clearRequestState } from "metabase/redux/requests";
 
 import Questions from "metabase/entities/questions";
@@ -312,19 +312,19 @@ export const initializeQB = (location, params) => {
 
       // initialize parts of the query based on optional parameters supplied
       if (options.table != undefined && card.dataset_query.query) {
-        card.dataset_query.query.source_table = parseInt(options.table);
+        card.dataset_query.query["source-table"] = parseInt(options.table);
       }
 
       if (options.segment != undefined && card.dataset_query.query) {
         card.dataset_query.query.filter = [
-          "AND",
-          ["SEGMENT", parseInt(options.segment)],
+          "and",
+          ["segment", parseInt(options.segment)],
         ];
       }
 
       if (options.metric != undefined && card.dataset_query.query) {
         card.dataset_query.query.aggregation = [
-          "METRIC",
+          "metric",
           parseInt(options.metric),
         ];
       }
@@ -501,7 +501,9 @@ export const loadDatabaseFields = createThunkAction(
   dbId => {
     return async (dispatch, getState) => {
       // if we already have the metadata loaded for the given table then we are done
-      const { qb: { databaseFields } } = getState();
+      const {
+        qb: { databaseFields },
+      } = getState();
       try {
         let fields;
         if (databaseFields[dbId]) {
@@ -575,7 +577,9 @@ export const setCardVisualization = createThunkAction(
   SET_CARD_VISUALIZATION,
   display => {
     return (dispatch, getState) => {
-      const { qb: { card, uiControls } } = getState();
+      const {
+        qb: { card, uiControls },
+      } = getState();
       let updatedCard = updateVisualizationSettings(
         card,
         uiControls.isEditing,
@@ -595,7 +599,9 @@ export const updateCardVisualizationSettings = createThunkAction(
   UPDATE_CARD_VISUALIZATION_SETTINGS,
   settings => {
     return (dispatch, getState) => {
-      const { qb: { card, uiControls } } = getState();
+      const {
+        qb: { card, uiControls },
+      } = getState();
       let updatedCard = updateVisualizationSettings(
         card,
         uiControls.isEditing,
@@ -615,7 +621,9 @@ export const replaceAllCardVisualizationSettings = createThunkAction(
   REPLACE_ALL_CARD_VISUALIZATION_SETTINGS,
   settings => {
     return (dispatch, getState) => {
-      const { qb: { card, uiControls } } = getState();
+      const {
+        qb: { card, uiControls },
+      } = getState();
       let updatedCard = updateVisualizationSettings(
         card,
         uiControls.isEditing,
@@ -634,7 +642,9 @@ export const updateTemplateTag = createThunkAction(
   UPDATE_TEMPLATE_TAG,
   templateTag => {
     return (dispatch, getState) => {
-      const { qb: { card, uiControls } } = getState();
+      const {
+        qb: { card, uiControls },
+      } = getState();
 
       let updatedCard = Utils.copy(card);
 
@@ -645,10 +655,11 @@ export const updateTemplateTag = createThunkAction(
         delete updatedCard.description;
       }
 
-      return assocIn(
+      // using updateIn instead of assocIn due to not preserving order of keys
+      return updateIn(
         updatedCard,
-        ["dataset_query", "native", "template_tags", templateTag.name],
-        templateTag,
+        ["dataset_query", "native", "template-tags"],
+        tags => ({ ...tags, [templateTag.name]: templateTag }),
       );
     };
   },
@@ -697,8 +708,10 @@ export const setCardAndRun = (nextCard, shouldUpdateUrl = true) => {
       ? // If the original card id is present, dynamically load its information for showing lineage
         await loadCard(card.original_card_id)
       : // Otherwise, use a current card as the original card if the card has been saved
-        // This is needed for checking whether the card is in dirty state or not
-        card.id ? card : null;
+      // This is needed for checking whether the card is in dirty state or not
+      card.id
+      ? card
+      : null;
 
     // Update the card and originalCard before running the actual query
     dispatch.action(SET_CARD_AND_RUN, { card, originalCard });
@@ -729,13 +742,17 @@ export const navigateToNewCardInsideQB = createThunkAction(
         // This is mainly a fallback for scenarios where a visualization legend is clicked inside QB
         dispatch(setCardAndRun(await loadCard(nextCard.id)));
       } else {
-        if (!cardQueryIsEquivalent(previousCard, nextCard)) {
-          // clear the query result so we don't try to display the new visualization before running the new query
-          dispatch(clearQueryResult());
+        const card = getCardAfterVisualizationClick(nextCard, previousCard);
+        const url = Urls.question(null, card);
+        if (shouldOpenInBlankWindow(url, { blankOnMetaKey: true })) {
+          open(url);
+        } else {
+          if (!cardQueryIsEquivalent(previousCard, nextCard)) {
+            // clear the query result so we don't try to display the new visualization before running the new query
+            dispatch(clearQueryResult());
+          }
+          dispatch(setCardAndRun(card));
         }
-        dispatch(
-          setCardAndRun(getCardAfterVisualizationClick(nextCard, previousCard)),
-        );
       }
     };
   },
@@ -852,7 +869,9 @@ export const setDatasetQuery = createThunkAction(
   SET_DATASET_QUERY,
   (dataset_query, run = false) => {
     return (dispatch, getState) => {
-      const { qb: { uiControls } } = getState();
+      const {
+        qb: { uiControls },
+      } = getState();
       const question = getQuestion(getState());
 
       let newQuestion = question;
@@ -892,7 +911,9 @@ export const SET_QUERY_MODE = "metabase/qb/SET_QUERY_MODE";
 export const setQueryMode = createThunkAction(SET_QUERY_MODE, type => {
   return (dispatch, getState) => {
     // TODO Atte Keinänen 6/1/17: Should use `queryResults` instead
-    const { qb: { card, uiControls } } = getState();
+    const {
+      qb: { card, uiControls },
+    } = getState();
     const queryResult = getFirstQueryResult(getState());
     const tableMetadata = getTableMetadata(getState());
 
@@ -976,8 +997,9 @@ export const setQueryDatabase = createThunkAction(
   SET_QUERY_DATABASE,
   databaseId => {
     return async (dispatch, getState) => {
-      const { qb: { card, uiControls } } = getState();
-      const databases = getDatabases(getState());
+      const {
+        qb: { card, uiControls },
+      } = getState();
 
       // picking the same database doesn't change anything
       if (databaseId === card.dataset_query.database) {
@@ -991,18 +1013,18 @@ export const setQueryDatabase = createThunkAction(
         let updatedCard = startNewCard(card.dataset_query.type, databaseId);
         if (existingQuery) {
           updatedCard.dataset_query.native.query = existingQuery;
-          updatedCard.dataset_query.native.template_tags =
-            card.dataset_query.native.template_tags;
+          updatedCard.dataset_query.native["template-tags"] =
+            card.dataset_query.native["template-tags"];
         }
 
         // set the initial collection for the query if this is a native query
         // this is only used for Mongo queries which need to be ran against a specific collection
-        if (updatedCard.dataset_query.type === "native") {
-          let database = databases[databaseId],
-            tables = database ? database.tables : [],
-            table = tables.length > 0 ? tables[0] : null;
-          if (table) {
-            updatedCard.dataset_query.native.collection = table.name;
+        const question = new Question(getMetadata(getState()), updatedCard);
+        const query = question.query();
+        if (query instanceof NativeQuery && query.requiresTable()) {
+          const tables = query.tables();
+          if (tables && tables.length > 0) {
+            updatedCard.dataset_query.native.collection = tables[0].name;
           }
         }
 
@@ -1019,8 +1041,8 @@ export const setQueryDatabase = createThunkAction(
         );
         if (existingQuery) {
           updatedCard.dataset_query.native.query = existingQuery;
-          updatedCard.dataset_query.native.template_tags =
-            card.dataset_query.native.template_tags;
+          updatedCard.dataset_query.native["template-tags"] =
+            card.dataset_query.native["template-tags"];
         }
 
         dispatch(loadMetadataForCard(updatedCard));
@@ -1040,13 +1062,15 @@ export const setQuerySourceTable = createThunkAction(
   SET_QUERY_SOURCE_TABLE,
   sourceTable => {
     return async (dispatch, getState) => {
-      const { qb: { card, uiControls } } = getState();
+      const {
+        qb: { card, uiControls },
+      } = getState();
 
       // this will either be the id or an object with an id
       const tableId = sourceTable.id || sourceTable;
 
       // if the table didn't actually change then nothing is modified
-      if (tableId === card.dataset_query.query.source_table) {
+      if (tableId === card.dataset_query.query["source-table"]) {
         return card;
       }
 
@@ -1081,7 +1105,9 @@ export const setQuerySourceTable = createThunkAction(
 
 function createQueryAction(action, updaterFunction, event) {
   return createThunkAction(action, (...args) => (dispatch, getState) => {
-    const { qb: { card } } = getState();
+    const {
+      qb: { card },
+    } = getState();
     if (card.dataset_query.type === "query") {
       const datasetQuery = Utils.copy(card.dataset_query);
       updaterFunction(datasetQuery.query, ...args);
@@ -1253,7 +1279,9 @@ export const getDisplayTypeForCard = (card, queryResults) => {
   // try a little logic to pick a smart display for the data
   // TODO: less hard-coded rules for picking chart type
   const isScalarVisualization =
-    card.display === "scalar" || card.display === "progress";
+    card.display === "scalar" ||
+    card.display === "progress" ||
+    card.display === "gauge";
   if (
     !isScalarVisualization &&
     queryResult.data.rows &&
@@ -1298,7 +1326,7 @@ const getQuestionWithDefaultVisualizationSettings = (question, series) => {
   const oldVizSettings = question.visualizationSettings();
   const newVizSettings = {
     ...oldVizSettings,
-    ...getPersistableDefaultSettings(series),
+    ...getPersistableDefaultSettingsForSeries(series),
   };
 
   // Don't update the question unnecessarily
@@ -1329,7 +1357,9 @@ export const queryErrored = createThunkAction(
 export const CANCEL_QUERY = "metabase/qb/CANCEL_QUERY";
 export const cancelQuery = createThunkAction(CANCEL_QUERY, () => {
   return async (dispatch, getState) => {
-    const { qb: { uiControls, cancelQueryDeferred } } = getState();
+    const {
+      qb: { uiControls, cancelQueryDeferred },
+    } = getState();
 
     if (uiControls.isRunning && cancelQueryDeferred) {
       cancelQueryDeferred.resolve();
@@ -1341,7 +1371,9 @@ export const FOLLOW_FOREIGN_KEY = "metabase/qb/FOLLOW_FOREIGN_KEY";
 export const followForeignKey = createThunkAction(FOLLOW_FOREIGN_KEY, fk => {
   return async (dispatch, getState) => {
     // TODO Atte Keinänen 6/1/17: Should use `queryResults` instead
-    const { qb: { card } } = getState();
+    const {
+      qb: { card },
+    } = getState();
     const queryResult = getFirstQueryResult(getState());
 
     if (!queryResult || !fk) {
@@ -1359,10 +1391,10 @@ export const followForeignKey = createThunkAction(FOLLOW_FOREIGN_KEY, fk => {
     // action is on an FK column
     let newCard = startNewCard("query", card.dataset_query.database);
 
-    newCard.dataset_query.query.source_table = fk.origin.table.id;
+    newCard.dataset_query.query["source-table"] = fk.origin.table.id;
     newCard.dataset_query.query.aggregation = ["rows"];
     newCard.dataset_query.query.filter = [
-      "AND",
+      "and",
       ["=", fk.origin.id, originValue],
     ];
 
@@ -1378,7 +1410,9 @@ export const loadObjectDetailFKReferences = createThunkAction(
   () => {
     return async (dispatch, getState) => {
       // TODO Atte Keinänen 6/1/17: Should use `queryResults` instead
-      const { qb: { card, tableForeignKeys } } = getState();
+      const {
+        qb: { card, tableForeignKeys },
+      } = getState();
       const queryResult = getFirstQueryResult(getState());
 
       function getObjectDetailIdValue(data) {
@@ -1393,10 +1427,10 @@ export const loadObjectDetailFKReferences = createThunkAction(
       async function getFKCount(card, queryResult, fk) {
         let fkQuery = createQuery("query");
         fkQuery.database = card.dataset_query.database;
-        fkQuery.query.source_table = fk.origin.table_id;
+        fkQuery.query["source-table"] = fk.origin.table_id;
         fkQuery.query.aggregation = ["count"];
         fkQuery.query.filter = [
-          "AND",
+          "and",
           ["=", fk.origin.id, getObjectDetailIdValue(queryResult.data)],
         ];
 
@@ -1443,7 +1477,9 @@ const ADD_FIELD = "metabase/qb/ADD_FIELD";
 export const addField = createThunkAction(
   ADD_FIELD,
   (field, run = true) => (dispatch, getState) => {
-    const { qb: { card } } = getState();
+    const {
+      qb: { card },
+    } = getState();
     const queryResult = getFirstQueryResult(getState());
     if (
       card.dataset_query.type === "query" &&
@@ -1532,6 +1568,9 @@ export const viewPreviousObjectDetail = () => {
     dispatch(runQuestionQuery());
   };
 };
+
+export const SHOW_CHART_SETTINGS = "metabase/query_builder/SHOW_CHART_SETTINGS";
+export const showChartSettings = createAction(SHOW_CHART_SETTINGS);
 
 // these are just temporary mappings to appease the existing QB code and it's naming prefs
 export const toggleDataReferenceFn = toggleDataReference;

@@ -1,6 +1,7 @@
 /* @flow weak */
 
 import Scalar from "./visualizations/Scalar.jsx";
+import SmartScalar from "./visualizations/SmartScalar.jsx";
 import Progress from "./visualizations/Progress.jsx";
 import Table from "./visualizations/Table.jsx";
 import Text from "./visualizations/Text.jsx";
@@ -9,11 +10,13 @@ import BarChart from "./visualizations/BarChart.jsx";
 import RowChart from "./visualizations/RowChart.jsx";
 import PieChart from "./visualizations/PieChart.jsx";
 import AreaChart from "./visualizations/AreaChart.jsx";
+import ComboChart from "./visualizations/ComboChart.jsx";
 import MapViz from "./visualizations/Map.jsx";
 import ScatterPlot from "./visualizations/ScatterPlot.jsx";
 import Funnel from "./visualizations/Funnel.jsx";
+import Gauge from "./visualizations/Gauge.jsx";
 import ObjectDetail from "./visualizations/ObjectDetail.jsx";
-import { t } from "c-3po";
+import { t } from "ttag";
 import _ from "underscore";
 
 import type { Series } from "metabase/meta/types/Visualization";
@@ -123,12 +126,15 @@ const extractRemappedColumns = data => {
 };
 
 registerVisualization(Scalar);
+registerVisualization(SmartScalar);
 registerVisualization(Progress);
+registerVisualization(Gauge);
 registerVisualization(Table);
 registerVisualization(Text);
 registerVisualization(LineChart);
 registerVisualization(AreaChart);
 registerVisualization(BarChart);
+registerVisualization(ComboChart);
 registerVisualization(RowChart);
 registerVisualization(ScatterPlot);
 registerVisualization(PieChart);

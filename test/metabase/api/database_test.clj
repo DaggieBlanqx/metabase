@@ -1,9 +1,12 @@
 (ns metabase.api.database-test
-  (:require [expectations :refer :all]
+  "Tests for /api/database endpoints."
+  (:require [clojure.string :as str]
+            [expectations :refer :all]
             [metabase
              [driver :as driver]
              [util :as u]]
             [metabase.api.database :as database-api]
+            [metabase.driver.util :as driver.u]
             [metabase.models
              [card :refer [Card]]
              [collection :refer [Collection]]
@@ -21,11 +24,10 @@
              [data :as data]
              [util :as tu :refer [match-$]]]
             [metabase.test.data
-             [datasets :as datasets]
+             [env :as tx.env]
              [users :refer :all]]
-            [toucan
-             [db :as db]
-             [hydrate :as hydrate]]
+            [metabase.test.util.log :as tu.log]
+            [toucan.db :as db]
             [toucan.util.test :as tt]))
 
 ;; HELPER FNS
@@ -49,16 +51,18 @@
       (finally
         (db/delete! Database :id (:id db))))))
 
-(defmacro ^:private expect-with-temp-db-created-via-api {:style/indent 1} [[binding & [options]] expected actual]
-  ;; use `gensym` instead of auto gensym here so we can be sure it's a unique symbol every time. Otherwise since expectations hashes its body
-  ;; to generate function names it will treat every usage this as the same test and only a single one will end up being ran
-  (let [result (gensym "result-")]
-    `(let [~result (delay (do-with-temp-db-created-via-api ~options (fn [~binding]
-                                                                      [~expected
-                                                                       ~actual])))]
+(defmacro ^:private expect-with-temp-db-created-via-api {:style/indent 1} [[db-binding & [options]] expected actual]
+  ;; use `gensym` instead of auto gensym here so we can be sure it's a unique symbol every time. Otherwise since
+  ;; expectations hashes its body to generate function names it will treat every usage this as the same test and only
+  ;; a single one will end up being ran
+  (let [result-symb (gensym "result-")]
+    `(let [~result-symb (delay (do-with-temp-db-created-via-api ~options (fn [~db-binding]
+                                                                           [~expected
+                                                                            ~actual])))]
        (expect
-         (u/ignore-exceptions (first @~result)) ; in case @result# barfs we don't want the test to succeed (Exception == Exception for expectations)
-         (second @~result)))))
+         ;; in case @result# barfs we don't want the test to succeed (Exception == Exception for expectations)
+         (u/ignore-exceptions (first (deref ~result-symb)))
+         (second (deref ~result-symb))))))
 
 (def ^:private default-db-details
   {:engine                      "h2"
@@ -86,7 +90,7 @@
              :details    $
              :updated_at $
              :timezone   $
-             :features   (map name (driver/features (driver/engine->driver (:engine db))))}))))
+             :features   (map name (driver.u/features (:engine db)))}))))
 
 
 ;; # DB LIFECYCLE ENDPOINTS
@@ -114,6 +118,7 @@
 
 ;; ## POST /api/database
 ;; Check that we can create a Database
+;; TODO - this test fails if we're running Postgres locally & it requires a password...
 (expect-with-temp-db-created-via-api [db {:is_full_sync false}]
   (merge default-db-details
          (match-$ db
@@ -124,7 +129,7 @@
             :details      {:host "localhost", :port 5432, :dbname "fakedb", :user "cam", :ssl true}
             :updated_at   $
             :name         $
-            :features     (driver/features (driver/engine->driver :postgres))}))
+            :features     (driver.u/features :postgres)}))
   (Database (:id db)))
 
 
@@ -174,96 +179,83 @@
                 :active          $
                 :id              $
                 :db_id           $
-                :raw_table_id    $
                 :created_at      $
                 :fields_hash     $}))
       (update :entity_type (comp (partial str "entity/") name))))
 
-
-;; TODO - this is a test code smell, each test should clean up after itself and this step shouldn't be neccessary. One day we should be able to remove this!
-;; If you're writing a NEW test that needs this, fix your brain and your test!
-;; To reïterate, this is BAD BAD BAD BAD BAD BAD! It will break tests if you use it! Don't use it!
-(defn- ^:deprecated delete-randomly-created-databases!
-  "Delete all the randomly created Databases we've made so far. Optionally specify one or more IDs to SKIP."
-  [& {:keys [skip]}]
-  (let [ids-to-skip (into (set skip)
-                          (for [engine datasets/all-valid-engines
-                                :let   [id (datasets/when-testing-engine engine
-                                             (:id (data/get-or-create-test-data-db! (driver/engine->driver engine))))]
-                                :when  id]
-                            id))]
-    (when-let [dbs (seq (db/select [Database :name :engine :id] :id [:not-in ids-to-skip]))]
-      (println (u/format-color 'red (str "\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
-                                         "WARNING: deleting randomly created databases:\n%s"
-                                         "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n")
-                 (u/pprint-to-str (for [db dbs]
-                                    (dissoc db :features))))))
-    (db/delete! Database :id [:not-in ids-to-skip])))
-
-
 ;; ## GET /api/database
-;; Test that we can get all the DBs (ordered by name)
+;; Test that we can get all the DBs (ordered by name, then driver)
 ;; Database details *should not* come back for Rasta since she's not a superuser
-(expect-with-temp-db-created-via-api [{db-id :id}]
-  (set (filter identity (conj (for [engine datasets/all-valid-engines]
-                                (datasets/when-testing-engine engine
-                                  (merge default-db-details
-                                         (match-$ (data/get-or-create-test-data-db! (driver/engine->driver engine))
-                                           {:created_at         $
-                                            :engine             (name $engine)
-                                            :id                 $
-                                            :updated_at         $
-                                            :timezone           $
-                                            :name               "test-data"
-                                            :native_permissions "write"
-                                            :features           (map name (driver/features (driver/engine->driver engine)))}))))
-                              (merge default-db-details
-                                     (match-$ (Database db-id)
-                                       {:created_at         $
-                                        :engine             "postgres"
-                                        :id                 $
-                                        :updated_at         $
-                                        :name               $
-                                        :timezone           $
-                                        :native_permissions "write"
-                                        :features           (map name (driver/features (driver/engine->driver :postgres)))})))))
-  (do
-    (delete-randomly-created-databases! :skip [db-id])
-    (set ((user->client :rasta) :get 200 "database"))))
+(expect-with-temp-db-created-via-api [{db-id :id, db-name :name}]
+  (vec
+   (sort-by
+    (fn [{db-name :name, driver :engine}] (mapv (comp str/lower-case name) [db-name driver]))
+    (cons
+     (merge
+      default-db-details
+      (match-$ (Database db-id)
+        {:created_at         $
+         :engine             "postgres"
+         :id                 $
+         :updated_at         $
+         :name               $
+         :timezone           $
+         :native_permissions "write"
+         :features           (map name (driver.u/features :postgres))}))
+     (for [driver (conj tx.env/test-drivers :h2)
+           ;; GA has no test extensions impl and thus data/db doesn't work with it
+           :when  (not= driver :googleanalytics)]
+       (merge
+        default-db-details
+        (match-$ (driver/with-driver driver (data/db))
+          {:created_at         $
+           :engine             (name $engine)
+           :id                 $
+           :updated_at         $
+           :timezone           $
+           :name               "test-data"
+           :native_permissions "write"
+           :features           (map name (driver.u/features driver))}))))))
+  (filterv #(#{"test-data" db-name} (:name %))
+           ((user->client :rasta) :get 200 "database")))
 
 
 
 ;; GET /api/databases (include tables)
-(expect-with-temp-db-created-via-api [{db-id :id}]
-  (set (cons (merge default-db-details
-                    (match-$ (Database db-id)
-                      {:created_at         $
-                       :engine             "postgres"
-                       :id                 $
-                       :updated_at         $
-                       :name               $
-                       :timezone           $
-                       :native_permissions "write"
-                       :tables             []
-                       :features           (map name (driver/features (driver/engine->driver :postgres)))}))
-             (filter identity (for [engine datasets/all-valid-engines]
-                                (datasets/when-testing-engine engine
-                                  (let [database (data/get-or-create-test-data-db! (driver/engine->driver engine))]
-                                    (merge default-db-details
-                                           (match-$ database
-                                             {:created_at         $
-                                              :engine             (name $engine)
-                                              :id                 $
-                                              :updated_at         $
-                                              :timezone           $
-                                              :name               "test-data"
-                                              :native_permissions "write"
-                                              :tables             (sort-by :name (for [table (db/select Table, :db_id (:id database))]
-                                                                                   (table-details table)))
-                                              :features           (map name (driver/features (driver/engine->driver engine)))}))))))))
-  (do
-    (delete-randomly-created-databases! :skip [db-id])
-    (set ((user->client :rasta) :get 200 "database" :include_tables true))))
+(expect-with-temp-db-created-via-api [{db-id :id, db-name :name}]
+  (vec
+   (sort-by
+    (fn [{db-name :name, driver :engine}] (mapv (comp str/lower-case name) [db-name driver]))
+    (cons
+     (merge
+      default-db-details
+      (match-$ (Database db-id)
+        {:created_at         $
+         :engine             "postgres"
+         :id                 $
+         :updated_at         $
+         :name               $
+         :timezone           $
+         :native_permissions "write"
+         :tables             []
+         :features           (map name (driver.u/features :postgres))}))
+     (for [driver (conj tx.env/test-drivers :h2)
+           :when  (not= driver :googleanalytics)
+           :let   [database (driver/with-driver driver (data/db))]]
+       (merge
+        default-db-details
+        (match-$ database
+          {:created_at         $
+           :engine             (name $engine)
+           :id                 $
+           :updated_at         $
+           :timezone           $
+           :name               "test-data"
+           :native_permissions "write"
+           :tables             (sort-by :name (map table-details (db/select Table, :db_id (:id database))))
+           :features           (map name (driver.u/features driver))}))))))
+  (filterv #(#{"test-data" db-name} (:name %))
+           ((user->client :rasta) :get 200 "database" :include_tables true)))
 
 (def ^:private default-field-details
   {:description        nil
@@ -273,7 +265,8 @@
    :position           0
    :target             nil
    :preview_display    true
-   :parent_id          nil})
+   :parent_id          nil
+   :settings           nil})
 
 (defn- field-details [field]
   (merge
@@ -281,7 +274,6 @@
    (match-$ field
      {:updated_at          $
       :id                  $
-      :raw_column_id       $
       :created_at          $
       :last_analyzed       $
       :fingerprint         $
@@ -298,7 +290,7 @@
             :updated_at $
             :name       "test-data"
             :timezone   $
-            :features   (mapv name (driver/features (driver/engine->driver :h2)))
+            :features   (mapv name (driver.u/features :h2))
             :tables     [(merge default-table-details
                                 (match-$ (Table (data/id :categories))
                                   {:schema       "PUBLIC"
@@ -327,7 +319,6 @@
                                    :rows         nil
                                    :updated_at   $
                                    :id           (data/id :categories)
-                                   :raw_table_id $
                                    :db_id        (data/id)
                                    :created_at   $
                                    :fields_hash  $}))]}))
@@ -439,15 +430,19 @@
 
 ;; make sure that GET /api/database/include_cards=true removes Cards that belong to a driver that doesn't support
 ;; nested queries
-(tt/expect-with-temp [Database [druid-db   {:engine :druid, :details {}}]
-                      Card     [druid-card {:name             "Druid Card"
-                                            :dataset_query    {:database (u/get-id druid-db)
-                                                               :type     :native
-                                                               :native   {:query "[DRUID QUERY GOES HERE]"}}
-                                            :result_metadata [{:name "sparrows"}]
-                                            :database_id     (u/get-id druid-db)}]
-                      Card     [ok-card (assoc (card-with-native-query "OK Card")
-                                          :result_metadata [{:name "finches"}])]]
+(driver/register! ::no-nested-query-support :parent :h2)
+
+(defmethod driver/supports? [::no-nested-query-support :nested-queries] [_ _] false)
+
+(tt/expect-with-temp [Database [bad-db   {:engine ::no-nested-query-support, :details {}}]
+                      Card     [bad-card {:name            "Bad Card"
+                                          :dataset_query   {:database (u/get-id bad-db)
+                                                            :type     :native
+                                                            :native   {:query "[QUERY GOES HERE]"}}
+                                          :result_metadata [{:name "sparrows"}]
+                                          :database_id     (u/get-id bad-db)}]
+                      Card     [ok-card  (assoc (card-with-native-query "OK Card")
+                                           :result_metadata [{:name "finches"}])]]
   (saved-questions-virtual-db
     (virtual-table-for-card ok-card))
   (fetch-virtual-database))
@@ -621,7 +616,7 @@
 ;; and using `with-redefs` to disable it in the few tests where it makes sense, we actually have to use `with-redefs`
 ;; here to simulate its *normal* behavior. :unamused:
 (defn- test-database-connection [engine details]
-  (if (driver/can-connect-with-details? (keyword engine) details)
+  (if (driver.u/can-connect-with-details? (keyword engine) details)
     nil
     {:valid false, :message "Error!"}))
 
@@ -645,60 +640,131 @@
 (expect
   {:valid false, :message "Error!"}
   (with-redefs [database-api/test-database-connection test-database-connection]
-    (#'database-api/test-connection-details "h2" {:db "ABC"})))
+    (tu.log/suppress-output
+      (#'database-api/test-connection-details "h2" {:db "ABC"}))))
 
 (expect
   {:valid false}
   (with-redefs [database-api/test-database-connection test-database-connection]
-    ((user->client :crowberto) :post 200 "database/validate"
-     {:details {:engine :h2, :details {:db "ABC"}}})))
+    (tu.log/suppress-output
+      ((user->client :crowberto) :post 200 "database/validate"
+       {:details {:engine :h2, :details {:db "ABC"}}}))))
 
-;; Tests for GET /api/database/:id/schemas
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                      GET /api/database/:id/schemas & GET /api/database/:id/schema/:schema                      |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; Tests for GET /api/database/:id/schemas: should work if user has full DB perms...
+(expect
+  ["schema1"]
+  (tt/with-temp* [Database [{db-id :id}]
+                  Table    [_           {:db_id db-id, :schema "schema1"}]
+                  Table    [_           {:db_id db-id, :schema "schema1"}]]
+    ((user->client :rasta) :get 200 (format "database/%d/schemas" db-id))))
+
+;; ...or full schema perms...
+(expect
+  ["schema1"]
+  (tt/with-temp* [Database [{db-id :id}]
+                  Table    [_           {:db_id db-id, :schema "schema1"}]
+                  Table    [_           {:db_id db-id, :schema "schema1"}]]
+    (perms/revoke-permissions! (perms-group/all-users) db-id)
+    (perms/grant-permissions!  (perms-group/all-users) db-id "schema1")
+    ((user->client :rasta) :get 200 (format "database/%d/schemas" db-id))))
+
+;; ...or just table read perms...
 (expect
   ["schema1"]
   (tt/with-temp* [Database [{db-id :id}]
                   Table    [t1          {:db_id db-id, :schema "schema1"}]
                   Table    [t2          {:db_id db-id, :schema "schema1"}]]
-    ((user->client :crowberto) :get 200 (format "database/%d/schemas" db-id))))
+    (perms/revoke-permissions! (perms-group/all-users) db-id)
+    (perms/grant-permissions!  (perms-group/all-users) db-id "schema1" t1)
+    (perms/grant-permissions!  (perms-group/all-users) db-id "schema1" t2)
+    ((user->client :rasta) :get 200 (format "database/%d/schemas" db-id))))
 
 ;; Multiple schemas are ordered by name
 (expect
   ["schema1" "schema2" "schema3"]
   (tt/with-temp* [Database [{db-id :id}]
-                  Table    [t1          {:db_id db-id, :schema "schema3"}]
-                  Table    [t2          {:db_id db-id, :schema "schema2"}]
-                  Table    [t3          {:db_id db-id, :schema "schema1"}]]
-    ((user->client :crowberto) :get 200 (format "database/%d/schemas" db-id))))
+                  Table    [_ {:db_id db-id, :schema "schema3"}]
+                  Table    [_ {:db_id db-id, :schema "schema2"}]
+                  Table    [_ {:db_id db-id, :schema "schema1"}]]
+    ((user->client :rasta) :get 200 (format "database/%d/schemas" db-id))))
 
-;; Multiple schemas are ordered by name
+;; Can we fetch the Tables in a Schema? (If we have full DB perms)
 (expect
   ["t1" "t3"]
   (tt/with-temp* [Database [{db-id :id}]
-                  Table    [{t1-id :id} {:db_id db-id, :schema "schema1", :name "t1"}]
-                  Table    [t2          {:db_id db-id, :schema "schema2"}]
-                  Table    [{t3-id :id} {:db_id db-id, :schema "schema1", :name "t3"}]]
-    (map :name ((user->client :crowberto) :get 200 (format "database/%d/schema/%s" db-id "schema1")))))
+                  Table    [_ {:db_id db-id, :schema "schema1", :name "t1"}]
+                  Table    [_ {:db_id db-id, :schema "schema2"}]
+                  Table    [_ {:db_id db-id, :schema "schema1", :name "t3"}]]
+    (map :name ((user->client :rasta) :get 200 (format "database/%d/schema/%s" db-id "schema1")))))
+
+;; Can we fetch the Tables in a Schema? (If we have full schema perms)
+(expect
+  ["t1" "t3"]
+  (tt/with-temp* [Database [{db-id :id}]
+                  Table    [_ {:db_id db-id, :schema "schema1", :name "t1"}]
+                  Table    [_ {:db_id db-id, :schema "schema2"}]
+                  Table    [_ {:db_id db-id, :schema "schema1", :name "t3"}]]
+    (perms/revoke-permissions! (perms-group/all-users) db-id)
+    (perms/grant-permissions!  (perms-group/all-users) db-id "schema1")
+    (map :name ((user->client :rasta) :get 200 (format "database/%d/schema/%s" db-id "schema1")))))
+
+;; Can we fetch the Tables in a Schema? (If we have full Table perms)
+(expect
+  ["t1" "t3"]
+  (tt/with-temp* [Database [{db-id :id}]
+                  Table    [t1 {:db_id db-id, :schema "schema1", :name "t1"}]
+                  Table    [_  {:db_id db-id, :schema "schema2"}]
+                  Table    [t3 {:db_id db-id, :schema "schema1", :name "t3"}]]
+        (perms/revoke-permissions! (perms-group/all-users) db-id)
+    (perms/grant-permissions!  (perms-group/all-users) db-id "schema1" t1)
+    (perms/grant-permissions!  (perms-group/all-users) db-id "schema1" t3)
+    (map :name ((user->client :rasta) :get 200 (format "database/%d/schema/%s" db-id "schema1")))))
 
 ;; GET /api/database/:id/schemas should return a 403 for a user that doesn't have read permissions
 (expect
   "You don't have permissions to do that."
   (tt/with-temp* [Database [{database-id :id}]
-                  Table    [{table-id :id} {:db_id database-id, :schema "test"}]]
-    (perms/delete-related-permissions! (perms-group/all-users) (perms/object-path database-id))
+                  Table    [_ {:db_id database-id, :schema "test"}]]
+    (perms/revoke-permissions! (perms-group/all-users) database-id)
     ((user->client :rasta) :get 403 (format "database/%s/schemas" database-id))))
 
-;; GET /api/database/:id/schemas should return a 403 for a user that doesn't have read permissions
+;; GET /api/database/:id/schemas should exclude schemas for which the user has no perms
+(expect
+  ["schema-with-perms"]
+  (tt/with-temp* [Database [{database-id :id}]
+                  Table    [_ {:db_id database-id, :schema "schema-with-perms"}]
+                  Table    [_ {:db_id database-id, :schema "schema-without-perms"}]]
+    (perms/revoke-permissions! (perms-group/all-users) database-id)
+    (perms/grant-permissions!  (perms-group/all-users) database-id "schema-with-perms")
+    ((user->client :rasta) :get 200 (format "database/%s/schemas" database-id))))
+
+;; GET /api/database/:id/schema/:schema should return a 403 for a user that doesn't have read permissions FOR THE DB...
 (expect
   "You don't have permissions to do that."
   (tt/with-temp* [Database [{database-id :id}]
                   Table    [{table-id :id} {:db_id database-id, :schema "test"}]]
-    (perms/delete-related-permissions! (perms-group/all-users) (perms/object-path database-id))
+    (perms/revoke-permissions! (perms-group/all-users) database-id)
     ((user->client :rasta) :get 403 (format "database/%s/schema/%s" database-id "test"))))
+
+;; ... or for the SCHEMA
+(expect
+  "You don't have permissions to do that."
+  (tt/with-temp* [Database [{database-id :id}]
+                  Table    [_ {:db_id database-id, :schema "schema-with-perms"}]
+                  Table    [_ {:db_id database-id, :schema "schema-without-perms"}]]
+    (perms/revoke-permissions! (perms-group/all-users) database-id)
+    (perms/grant-permissions!  (perms-group/all-users) database-id "schema-with-perms")
+    ((user->client :rasta) :get 403 (format "database/%s/schema/%s" database-id "schema-without-perms"))))
 
 ;; Looking for a database that doesn't exist should return a 404
 (expect
   "Not found."
-  ((user->client :rasta) :get 404 (format "database/%s/schemas" Integer/MAX_VALUE)))
+  ((user->client :crowberto) :get 404 (format "database/%s/schemas" Integer/MAX_VALUE)))
 
 ;; Check that a 404 returns if the schema isn't found
 (expect
@@ -706,3 +772,22 @@
   (tt/with-temp* [Database [{db-id :id}]
                   Table    [{t1-id :id} {:db_id db-id, :schema "schema1"}]]
     ((user->client :crowberto) :get 404 (format "database/%d/schema/%s" db-id "not schema1"))))
+
+
+;; GET /api/database/:id/schema/:schema should exclude Tables for which the user has no perms
+(expect
+  ["table-with-perms"]
+  (tt/with-temp* [Database [{database-id :id}]
+                  Table    [table-with-perms {:db_id database-id, :schema "public", :name "table-with-perms"}]
+                  Table    [_                {:db_id database-id, :schema "public", :name "table-without-perms"}]]
+    (perms/revoke-permissions! (perms-group/all-users) database-id)
+    (perms/grant-permissions!  (perms-group/all-users) database-id "public" table-with-perms)
+    (map :name ((user->client :rasta) :get 200 (format "database/%s/schema/%s" database-id "public")))))
+
+;; GET /api/database/:id/schema/:schema should exclude inactive Tables
+(expect
+  ["table"]
+  (tt/with-temp* [Database [{database-id :id}]
+                  Table    [_ {:db_id database-id, :schema "public", :name "table"}]
+                  Table    [_ {:db_id database-id, :schema "public", :name "inactive-table", :active false}]]
+    (map :name ((user->client :rasta) :get 200 (format "database/%s/schema/%s" database-id "public")))))

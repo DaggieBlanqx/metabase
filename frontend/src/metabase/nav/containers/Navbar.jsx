@@ -1,7 +1,7 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
 import cx from "classnames";
-import { t } from "c-3po";
+import { t } from "ttag";
 import { Box, Flex } from "grid-styled";
 import styled from "styled-components";
 import { space, width } from "styled-system";
@@ -14,7 +14,7 @@ import { push } from "react-router-redux";
 import * as Urls from "metabase/lib/urls";
 
 import Button from "metabase/components/Button.jsx";
-import Icon from "metabase/components/Icon.jsx";
+import Icon, { IconWrapper } from "metabase/components/Icon";
 import Link from "metabase/components/Link";
 import LogoIcon from "metabase/components/LogoIcon.jsx";
 import Tooltip from "metabase/components/Tooltip";
@@ -28,6 +28,7 @@ import CreateDashboardModal from "metabase/components/CreateDashboardModal";
 import ProfileLink from "metabase/nav/components/ProfileLink.jsx";
 
 import { getPath, getContext, getUser } from "../selectors";
+import Database from "metabase/entities/databases";
 
 const mapStateToProps = (state, props) => ({
   path: getPath(state, props),
@@ -62,7 +63,7 @@ const ActiveSearchColor = color(colors.brand)
 
 const SearchWrapper = Flex.extend`
   ${width} background-color: ${props =>
-      props.active ? ActiveSearchColor : DefaultSearchColor};
+  props.active ? ActiveSearchColor : DefaultSearchColor};
   border-radius: 6px;
   align-items: center;
   color: white;
@@ -110,13 +111,14 @@ class SearchBar extends React.Component {
   }
 
   render() {
+    const { active, searchText } = this.state;
     return (
       <OnClickOutsideWrapper
         handleDismissal={() => this.setState({ active: false })}
       >
         <SearchWrapper
           onClick={() => this.setState({ active: true })}
-          active={this.state.active}
+          active={active}
         >
           <Icon name="search" ml={2} />
           <SearchInput
@@ -124,15 +126,15 @@ class SearchBar extends React.Component {
             py={2}
             pr={2}
             pl={1}
-            value={this.state.searchText}
-            placeholder="Search…"
+            value={searchText}
+            placeholder={t`Search` + "…"}
             onClick={() => this.setState({ active: true })}
             onChange={e => this.setState({ searchText: e.target.value })}
             onKeyPress={e => {
-              if (e.key === "Enter") {
+              if (e.key === "Enter" && (searchText || "").trim().length > 0) {
                 this.props.onChangeLocation({
                   pathname: "search",
-                  query: { q: this.state.searchText },
+                  query: { q: searchText },
                 });
               }
             }}
@@ -145,7 +147,14 @@ class SearchBar extends React.Component {
 
 const MODAL_NEW_DASHBOARD = "MODAL_NEW_DASHBOARD";
 
-@connect(mapStateToProps, mapDispatchToProps)
+@Database.loadList({
+  // set this to false to prevent a potential spinner on the main nav
+  loadingAndErrorWrapper: false,
+})
+@connect(
+  mapStateToProps,
+  mapDispatchToProps,
+)
 export default class Navbar extends Component {
   state = {
     modal: null,
@@ -179,7 +188,9 @@ export default class Navbar extends Component {
 
   renderAdminNav() {
     return (
-      <nav className={cx("Nav AdminNav sm-py1")}>
+      // NOTE: DO NOT REMOVE `Nav` CLASS FOR NOW, USED BY MODALS, FULLSCREEN DASHBOARD, ETC
+      // TODO: hide nav using state in redux instead?
+      <nav className={"Nav AdminNav sm-py1"}>
         <div className="sm-pl4 flex align-center pr1">
           <div className="NavTitle flex align-center">
             <Icon name={"gear"} className="AdminGear" size={22} />
@@ -212,6 +223,11 @@ export default class Navbar extends Component {
               path="/admin/permissions"
               currentPath={this.props.path}
             />
+            <AdminNavItem
+              name={t`Troubleshooting`}
+              path="/admin/troubleshooting"
+              currentPath={this.props.path}
+            />
           </ul>
 
           <ProfileLink {...this.props} />
@@ -223,6 +239,8 @@ export default class Navbar extends Component {
 
   renderEmptyNav() {
     return (
+      // NOTE: DO NOT REMOVE `Nav` CLASS FOR NOW, USED BY MODALS, FULLSCREEN DASHBOARD, ETC
+      // TODO: hide nav using state in redux instead?
       <nav className="Nav sm-py1 relative">
         <ul className="wrapper flex align-center">
           <li>
@@ -241,9 +259,13 @@ export default class Navbar extends Component {
   }
 
   renderMainNav() {
+    const hasDataAccess =
+      this.props.databases && this.props.databases.length > 0;
     return (
       <Flex
-        className="relative bg-brand text-white z3"
+        // NOTE: DO NOT REMOVE `Nav` CLASS FOR NOW, USED BY MODALS, FULLSCREEN DASHBOARD, ETC
+        // TODO: hide nav using state in redux instead?
+        className="Nav relative bg-brand text-white z3 flex-no-shrink"
         align="center"
         py={1}
         pr={2}
@@ -271,10 +293,18 @@ export default class Navbar extends Component {
           </Box>
         </Flex>
         <Flex ml="auto" align="center" className="relative z2">
-          <Link to={Urls.newQuestion()} mx={2} className="hide sm-show">
-            <Button medium>{t`Ask a question`}</Button>
-          </Link>
+          {hasDataAccess && (
+            <Link
+              to={Urls.newQuestion()}
+              mx={2}
+              className="hide sm-show"
+              data-metabase-event={`NavBar;New Question`}
+            >
+              <Button medium>{t`Ask a question`}</Button>
+            </Link>
+          )}
           <EntityMenu
+            tooltip={t`Create`}
             className="hide sm-show"
             triggerIcon="add"
             items={[
@@ -282,22 +312,30 @@ export default class Navbar extends Component {
                 title: t`New dashboard`,
                 icon: `dashboard`,
                 action: () => this.setModal(MODAL_NEW_DASHBOARD),
+                event: `NavBar;New Dashboard Click;`,
               },
               {
                 title: t`New pulse`,
                 icon: `pulse`,
                 link: Urls.newPulse(),
+                event: `NavBar;New Pulse Click;`,
               },
             ]}
           />
-          <Tooltip tooltip={t`Reference`}>
-            <Link to="reference" mx={2}>
-              <Icon name="reference" />
-            </Link>
-          </Tooltip>
+          {hasDataAccess && (
+            <Tooltip tooltip={t`Reference`}>
+              <Link to="reference" data-metabase-event={`NavBar;Reference`}>
+                <IconWrapper>
+                  <Icon name="reference" />
+                </IconWrapper>
+              </Link>
+            </Tooltip>
+          )}
           <Tooltip tooltip={t`Activity`}>
-            <Link to="activity" mx={2}>
-              <Icon name="bell" />
+            <Link to="activity" data-metabase-event={`NavBar;Activity`}>
+              <IconWrapper>
+                <Icon name="bell" />
+              </IconWrapper>
             </Link>
           </Tooltip>
           <ProfileLink {...this.props} />

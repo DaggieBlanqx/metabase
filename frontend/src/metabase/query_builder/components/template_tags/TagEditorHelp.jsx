@@ -1,6 +1,7 @@
 import React from "react";
-import { t, jt } from "c-3po";
+import { t, jt } from "ttag";
 import Code from "metabase/components/Code.jsx";
+import MetabaseSettings from "metabase/lib/settings";
 
 const EXAMPLES = {
   variable: {
@@ -8,7 +9,7 @@ const EXAMPLES = {
     type: "native",
     native: {
       query: "SELECT count(*)\nFROM products\nWHERE category = {{category}}",
-      template_tags: {
+      "template-tags": {
         category: {
           name: "category",
           display_name: "Category",
@@ -24,7 +25,7 @@ const EXAMPLES = {
     type: "native",
     native: {
       query: "SELECT count(*)\nFROM products\nWHERE {{created_at}}",
-      template_tags: {
+      "template-tags": {
         created_at: {
           name: "created_at",
           display_name: "Created At",
@@ -40,7 +41,7 @@ const EXAMPLES = {
     native: {
       query:
         "SELECT count(*)\nFROM products\n[[WHERE category = {{category}}]]",
-      template_tags: {
+      "template-tags": {
         category: {
           name: "category",
           display_name: "Category",
@@ -56,7 +57,7 @@ const EXAMPLES = {
     native: {
       query:
         "SELECT count(*)\nFROM products\nWHERE 1=1\n  [[AND id = {{id}}]]\n  [[AND category = {{category}}]]",
-      template_tags: {
+      "template-tags": {
         id: { name: "id", display_name: "ID", type: "number", required: false },
         category: {
           name: "category",
@@ -148,7 +149,7 @@ const TagEditorHelp = ({ setDatasetQuery, sampleDatasetId }) => {
 
       <p className="pt2 link">
         <a
-          href="https://www.metabase.com/docs/latest/users-guide/13-sql-parameters.html"
+          href={MetabaseSettings.docsUrl("users-guide/13-sql-parameters")}
           target="_blank"
           data-metabase-event="QueryBuilder;Template Tag Documentation Click"
         >{t`Read the full documentation`}</a>

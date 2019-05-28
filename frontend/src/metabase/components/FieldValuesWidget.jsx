@@ -2,7 +2,7 @@
 
 import React, { Component } from "react";
 import { connect } from "react-redux";
-import { t, jt } from "c-3po";
+import { t, jt } from "ttag";
 
 import TokenField from "metabase/components/TokenField";
 import RemappedValue from "metabase/containers/RemappedValue";
@@ -287,7 +287,7 @@ export class FieldValuesWidget extends Component {
               value={value}
               column={field}
               {...formatOptions}
-              round={false}
+              maximumFractionDigits={20}
               compact={false}
               autoLoad={true}
             />
@@ -296,7 +296,7 @@ export class FieldValuesWidget extends Component {
             <RemappedValue
               value={option[0]}
               column={field}
-              round={false}
+              maximumFractionDigits={20}
               autoLoad={false}
               {...formatOptions}
             />
@@ -368,4 +368,7 @@ const OptionsMessage = ({ message }) => (
   <div className="flex layout-centered p4 border-bottom">{message}</div>
 );
 
-export default connect(null, mapDispatchToProps)(FieldValuesWidget);
+export default connect(
+  null,
+  mapDispatchToProps,
+)(FieldValuesWidget);

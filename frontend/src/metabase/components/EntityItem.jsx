@@ -1,5 +1,5 @@
 import React from "react";
-import { t } from "c-3po";
+import { t } from "ttag";
 import cx from "classnames";
 import { Flex } from "grid-styled";
 
@@ -22,6 +22,7 @@ const EntityItemWrapper = Flex.extend`
 `;
 
 const EntityItem = ({
+  analyticsContext,
   name,
   iconName,
   iconColor,
@@ -29,27 +30,38 @@ const EntityItem = ({
   onPin,
   onFavorite,
   onMove,
+  onCopy,
   onArchive,
   selected,
   onToggleSelected,
   selectable,
   variant,
+  item,
 }) => {
   const actions = [
     onPin && {
       title: t`Pin this item`,
       icon: "pin",
       action: onPin,
+      event: `${analyticsContext};Entity Item;Pin Item;${item.model}`,
     },
     onMove && {
       title: t`Move this item`,
       icon: "move",
       action: onMove,
+      event: `${analyticsContext};Entity Item;Move Item;${item.model}`,
+    },
+    onCopy && {
+      title: t`Duplicate this item`,
+      icon: "clone",
+      action: onCopy,
+      event: `${analyticsContext};Entity Item;Copy Item;${item.model}`,
     },
     onArchive && {
-      title: t`Archive`,
+      title: t`Archive this item`,
       icon: "archive",
       action: onArchive,
+      event: `${analyticsContext};Entity Item;Archive Item;${item.model}`,
     },
   ].filter(action => action);
 
@@ -102,7 +114,7 @@ const EntityItem = ({
           <Icon name={iconName} color={iconColor} size={18} />
         )}
       </IconWrapper>
-      <h3>
+      <h3 className="overflow-hidden">
         <Ellipsified>{name}</Ellipsified>
       </h3>
 

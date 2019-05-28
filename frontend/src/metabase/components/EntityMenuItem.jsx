@@ -1,66 +1,76 @@
-import cxs from "cxs";
 import React from "react";
+import styled from "styled-components";
 import { Link } from "react-router";
 
 import Icon from "metabase/components/Icon";
 
 import colors from "metabase/lib/colors";
 
-const itemClasses = cxs({
-  display: "flex",
-  alignItems: "center",
-  cursor: "pointer",
-  color: colors["text-medium"],
-  paddingLeft: "1.45em",
-  paddingRight: "1.45em",
-  paddingTop: "0.85em",
-  paddingBottom: "0.85em",
-  textDecoration: "none",
-  transition: "all 300ms linear",
-  ":hover": {
-    color: colors["brand"],
+const Item = styled.div`
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: ${colors["text-medium"]};
+  padding: 0.85em 1.45em;
+  text-decoration: none;
+  transition: all 300ms linear;
+  :hover {
+    color: ${colors["brand"]};
+  }
+  > .Icon {
+    color: ${colors["text-light"]};
+    margin-right: 0.65em;
+  }
+  :hover > .Icon {
+    color: ${colors["brand"]};
+    transition: all 300ms linear;
   },
-  "> .Icon": {
-    color: colors["text-light"],
-    marginRight: "0.65em",
-  },
-  ":hover > .Icon": {
-    color: colors["brand"],
-    transition: "all 300ms linear",
-  },
-  // icon specific tweaks
-  // the alert icon should be optically aligned  with the x-height of the text
-  "> .Icon.Icon-alert": {
-    transform: `translateY(1px)`,
-  },
-  // the embed icon should be optically aligned with the x-height of the text
-  "> .Icon.Icon-embed": {
-    transform: `translateY(1px)`,
-  },
-  // the download icon should be optically aligned with the x-height of the text
-  "> .Icon.Icon-download": {
-    transform: `translateY(1px)`,
-  },
-  // the history icon is wider so it needs adjustment to center it with other
-  // icons
+  /* icon specific tweaks
+     the alert icon should be optically aligned  with the x-height of the text */
+  > .Icon.Icon-alert {
+    transform: translate-y(1px),
+  }
+  /* the embed icon should be optically aligned with the x-height of the text */
+  > .Icon.Icon-embed {
+    transform: translate-y(1px);
+  }
+  /* the download icon should be optically aligned with the x-height of the text */
+  > .Icon.Icon-download: {
+    transform: translate-y(1px);
+  }
+  /* the history icon is wider so it needs adjustment to center it with other
+   icons */
   "> .Icon.Icon-history": {
-    transform: `translateX(-2px)`,
+    transform: translate-x(-2px);
   },
-});
+`;
 
-const LinkMenuItem = ({ children, link, onClose }) => (
-  <Link className={itemClasses} to={link} onClick={onClose}>
+const LinkMenuItem = ({ children, link, onClose, event, externalLink }) => (
+  <Link
+    to={link}
+    target={externalLink ? "_blank" : null}
+    onClick={onClose}
+    data-metabase-event={event}
+  >
     {children}
   </Link>
 );
 
-const ActionMenuItem = ({ children, action }) => (
-  <div className={itemClasses} onClick={action}>
+const ActionMenuItem = ({ children, action, event }) => (
+  <div onClick={action} data-metabase-event={event}>
     {children}
   </div>
 );
 
-const EntityMenuItem = ({ action, title, icon, link, onClose }) => {
+const EntityMenuItem = ({
+  action,
+  title,
+  icon,
+  link,
+  onClose,
+  event,
+  externalLink,
+}) => {
   if (link && action) {
     console.warn(
       "EntityMenuItem Error: You cannot specify both action and link props",
@@ -68,20 +78,31 @@ const EntityMenuItem = ({ action, title, icon, link, onClose }) => {
     return <div />;
   }
 
-  const content = [
-    <Icon name={icon} mr={1} />,
-    <span className="text-bold">{title}</span>,
-  ];
+  const content = (
+    <Item>
+      {icon && <Icon name={icon} mr={1} />}
+      <span className="text-bold">{title}</span>
+    </Item>
+  );
 
   if (link) {
     return (
-      <LinkMenuItem link={link} onClose={onClose}>
+      <LinkMenuItem
+        link={link}
+        externalLink={externalLink}
+        onClose={onClose}
+        event={event}
+      >
         {content}
       </LinkMenuItem>
     );
   }
   if (action) {
-    return <ActionMenuItem action={action}>{content}</ActionMenuItem>;
+    return (
+      <ActionMenuItem action={action} event={event}>
+        {content}
+      </ActionMenuItem>
+    );
   }
 };
 

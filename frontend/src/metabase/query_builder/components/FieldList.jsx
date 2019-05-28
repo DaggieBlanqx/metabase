@@ -14,6 +14,7 @@ import Dimension, { BinnedDimension } from "metabase-lib/lib/Dimension";
 
 import type { ConcreteField } from "metabase/meta/types/Query";
 import type Table from "metabase-lib/lib/metadata/Table";
+import type { RenderItemWrapper } from "metabase/components/AccordianList.jsx";
 
 // import type { Section } from "metabase/components/AccordianList";
 export type AccordianListItem = {};
@@ -26,6 +27,7 @@ export type AccordianListSection = {
 type Props = {
   className?: string,
   maxHeight?: number,
+  width?: number,
 
   field: ?ConcreteField,
   onFieldChange: (field: ConcreteField) => void,
@@ -33,12 +35,15 @@ type Props = {
   // HACK: for segments
   onFilterChange?: (filter: any) => void,
 
-  tableMetadata: Table,
+  table: Table,
 
   alwaysExpanded?: boolean,
   enableSubDimensions?: boolean,
+  useOriginalDimension?: boolean,
 
   hideSectionHeader?: boolean,
+
+  renderItemWrapper?: RenderItemWrapper,
 };
 
 type State = {
@@ -56,19 +61,14 @@ export default class FieldList extends Component {
   }
 
   componentWillReceiveProps(newProps) {
-    let {
-      tableMetadata,
-      fieldOptions,
-      segmentOptions,
-      hideSectionHeader,
-    } = newProps;
-    let tableName = tableMetadata.display_name;
+    let { table, fieldOptions, segmentOptions, hideSectionHeader } = newProps;
+    let tableName = table.display_name;
 
     let specialOptions = [];
     if (segmentOptions) {
       specialOptions = segmentOptions.map(segment => ({
         name: segment.name,
-        value: ["SEGMENT", segment.id],
+        value: ["segment", segment.id],
         segment: segment,
       }));
     }
@@ -108,16 +108,15 @@ export default class FieldList extends Component {
     const {
       field,
       enableSubDimensions,
-      tableMetadata: { metadata },
+      table: { metadata },
     } = this.props;
 
     return (
       <div className="Field-extra flex align-center">
         {item.segment && this.renderSegmentTooltip(item.segment)}
-        {item.dimension &&
-          item.dimension.tag && (
-            <span className="h5 text-light px1">{item.dimension.tag}</span>
-          )}
+        {item.dimension && item.dimension.tag && (
+          <span className="h5 text-light px1">{item.dimension.tag}</span>
+        )}
         {enableSubDimensions &&
         item.dimension &&
         item.dimension.dimensions().length > 0 ? (
@@ -162,7 +161,10 @@ export default class FieldList extends Component {
   };
 
   renderSubDimensionTrigger(dimension) {
-    const { field, tableMetadata: { metadata } } = this.props;
+    const {
+      field,
+      table: { metadata },
+    } = this.props;
     const subDimension = dimension.isSameBaseDimension(field)
       ? Dimension.parseMBQL(field, metadata)
       : dimension.defaultDimension();
@@ -176,16 +178,11 @@ export default class FieldList extends Component {
   }
 
   renderSegmentTooltip(segment) {
-    let { tableMetadata } = this.props;
+    let { table } = this.props;
     return (
       <div className="p1">
         <Tooltip
-          tooltip={
-            <QueryDefinitionTooltip
-              object={segment}
-              tableMetadata={tableMetadata}
-            />
-          }
+          tooltip={<QueryDefinitionTooltip object={segment} table={table} />}
         >
           <span className="QuestionTooltipTarget" />
         </Tooltip>
@@ -213,6 +210,7 @@ export default class FieldList extends Component {
     const {
       field,
       enableSubDimensions,
+      useOriginalDimension,
       onFilterChange,
       onFieldChange,
     } = this.props;
@@ -222,9 +220,13 @@ export default class FieldList extends Component {
       // ensure if we select the same item we don't reset datetime-field's unit
       onFieldChange(field);
     } else {
-      const dimension = item.dimension.defaultDimension() || item.dimension;
+      const dimension = useOriginalDimension
+        ? item.dimension
+        : item.dimension.defaultDimension() || item.dimension;
       const shouldExcludeBinning =
-        !enableSubDimensions && dimension instanceof BinnedDimension;
+        !enableSubDimensions &&
+        !useOriginalDimension &&
+        dimension instanceof BinnedDimension;
 
       if (shouldExcludeBinning) {
         // If we don't let user choose the sub-dimension, we don't want to treat the field
@@ -242,12 +244,14 @@ export default class FieldList extends Component {
       <AccordianList
         className={this.props.className}
         maxHeight={this.props.maxHeight}
+        width={this.props.width}
         sections={this.state.sections}
         onChange={this.onChange}
         itemIsSelected={this.itemIsSelected}
         renderSectionIcon={this.renderSectionIcon}
         renderItemExtra={this.renderItemExtra}
         renderItemIcon={this.renderItemIcon}
+        renderItemWrapper={this.props.renderItemWrapper}
         getItemClasses={this.getItemClasses}
         alwaysExpanded={this.props.alwaysExpanded}
       />
@@ -258,13 +262,14 @@ export default class FieldList extends Component {
 import cx from "classnames";
 
 export const DimensionPicker = ({
+  style,
   className,
   dimension,
   dimensions,
   onChangeDimension,
 }) => {
   return (
-    <ul className="px2 py1">
+    <ul className={cx(className, "px2 py1")} style={style}>
       {dimensions.map((d, index) => (
         <li
           key={index}

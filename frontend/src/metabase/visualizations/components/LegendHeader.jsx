@@ -65,12 +65,22 @@ export default class LegendHeader extends Component {
     const showDots = series.length > 1;
     const isNarrow = this.state.width < 150;
     const showTitles = !showDots || !isNarrow;
-    const colors = settings["graph.colors"] || DEFAULT_COLORS;
-    const customTitles = settings["graph.series_labels"];
-    const titles =
-      customTitles && customTitles.length === series.length
-        ? customTitles
-        : series.map(thisSeries => thisSeries.card.name);
+    // const colors = settings["graph.colors"] || DEFAULT_COLORS;
+    // const customTitles = settings["graph.series_labels"];
+    // const titles =
+    //   customTitles && customTitles.length === series.length
+    //     ? customTitles
+    //     : series.map(thisSeries => thisSeries.card.name);
+
+    const seriesSettings =
+      settings.series && series.map(single => settings.series(single));
+
+    const colors = seriesSettings
+      ? seriesSettings.map(s => s.color)
+      : DEFAULT_COLORS;
+    const titles = seriesSettings
+      ? seriesSettings.map(s => s.title)
+      : series.map(single => single.card.name);
 
     return (
       <div
@@ -100,25 +110,24 @@ export default class LegendHeader extends Component {
                       element: e.currentTarget,
                     })
                 : onChangeCardAndRun
-                  ? () =>
-                      onChangeCardAndRun({
-                        nextCard: s.card,
-                        seriesIndex: index,
-                      })
-                  : null
+                ? () =>
+                    onChangeCardAndRun({
+                      nextCard: s.card,
+                      seriesIndex: index,
+                    })
+                : null
             }
             infoClassName={classNameWidgets}
           />,
-          onRemoveSeries &&
-            index > 0 && (
-              <Icon
-                name="close"
-                className="text-light flex-no-shrink mr1 cursor-pointer"
-                width={12}
-                height={12}
-                onClick={() => onRemoveSeries(s.card)}
-              />
-            ),
+          onRemoveSeries && index > 0 && (
+            <Icon
+              name="close"
+              className="text-light flex-no-shrink mr1 cursor-pointer"
+              width={12}
+              height={12}
+              onClick={() => onRemoveSeries(s.card)}
+            />
+          ),
         ])}
         {actionButtons && (
           <span

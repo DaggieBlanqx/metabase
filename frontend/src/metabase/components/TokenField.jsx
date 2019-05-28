@@ -5,7 +5,6 @@ import PropTypes from "prop-types";
 import { findDOMNode } from "react-dom";
 import _ from "underscore";
 import cx from "classnames";
-import cxs from "cxs";
 
 import OnClickOutsideWrapper from "metabase/components/OnClickOutsideWrapper";
 import Icon from "metabase/components/Icon";
@@ -22,9 +21,9 @@ import {
 } from "metabase/lib/keyboard";
 import { isObscured } from "metabase/lib/dom";
 
-const inputBoxClasses = cxs({
+const inputBoxStyles = {
   maxHeight: 130,
-});
+};
 
 type Value = any;
 type Option = any;
@@ -186,6 +185,10 @@ export default class TokenField extends Component {
   _label(option: Option) {
     const { labelKey } = this.props;
     return typeof labelKey === "function" ? labelKey(option) : option[labelKey];
+  }
+
+  _key(option: Option) {
+    return JSON.stringify(this._value(option));
   }
 
   _isLastFreeformValue(inputValue: string) {
@@ -545,11 +548,8 @@ export default class TokenField extends Component {
 
     const valuesList = (
       <ul
-        className={cx(
-          "border-bottom p1 pb2 flex flex-wrap bg-white scroll-x scroll-y",
-          inputBoxClasses,
-        )}
-        style={this.props.style}
+        className="border-bottom p1 pb2 flex flex-wrap bg-white scroll-x scroll-y"
+        style={{ ...this.props.style, inputBoxStyles }}
         onMouseDownCapture={this.onMouseDownCapture}
       >
         {value.map((v, index) => (
@@ -603,7 +603,7 @@ export default class TokenField extends Component {
           onMouseLeave={() => this.setState({ listIsHovered: false })}
         >
           {filteredOptions.map(option => (
-            <li className="mr1" key={this._value(option)}>
+            <li className="mr1" key={this._key(option)}>
               <div
                 ref={
                   this._valueIsEqual(selectedOptionValue, this._value(option))

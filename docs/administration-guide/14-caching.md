@@ -19,3 +19,8 @@ Instead of setting an absolute number of minutes or seconds for a cached result 
 
 #### Max cache entry size
 Lastly, you can set the maximum size of each question's cache in kilobytes, to prevent them from taking up too much space on your server.
+
+---
+
+## Next: editing metadata
+Taking just a few minutes to edit and add info to your database’s metadata can greatly enhance your experience with Metabase. Let’s learn how to [edit your metadata](03-metadata-editing.md).

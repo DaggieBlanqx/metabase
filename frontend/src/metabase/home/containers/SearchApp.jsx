@@ -1,14 +1,15 @@
 import React from "react";
 
-import { t, jt } from "c-3po";
+import { t, jt } from "ttag";
 import _ from "underscore";
 import Link from "metabase/components/Link";
 
 import { Box, Flex } from "grid-styled";
 
-import EntityListLoader from "metabase/entities/containers/EntityListLoader";
+import Search from "metabase/entities/search";
 
 import Card from "metabase/components/Card";
+import EmptyState from "metabase/components/EmptyState";
 import EntityItem from "metabase/components/EntityItem";
 import Subhead from "metabase/components/Subhead";
 import ItemTypeFilterBar, {
@@ -22,34 +23,33 @@ export default class SearchApp extends React.Component {
     const { location } = this.props;
     return (
       <Box mx={PAGE_PADDING}>
-        <Flex align="center" mb={2} py={[2, 3]}>
-          <Subhead>{jt`Results for "${location.query.q}"`}</Subhead>
-        </Flex>
-        <ItemTypeFilterBar
-          filters={FILTERS.concat({
-            name: t`Collections`,
-            filter: "collection",
-            icon: "all",
-          })}
-        />
+        {location.query.q && (
+          <Flex align="center" mb={2} py={[2, 3]}>
+            <Subhead>{jt`Results for "${location.query.q}"`}</Subhead>
+          </Flex>
+        )}
         <Box w={[1, 2 / 3]}>
-          <EntityListLoader
-            entityType="search"
-            entityQuery={location.query}
-            wrapped
-          >
+          <ItemTypeFilterBar
+            analyticsContext={`Search Results`}
+            filters={FILTERS.concat({
+              name: t`Collections`,
+              filter: "collection",
+              icon: "all",
+            })}
+          />
+          <Search.ListLoader query={location.query} wrapped>
             {({ list }) => {
               if (list.length === 0) {
                 return (
-                  <Flex align="center" justify="center" my={4} py={4}>
-                    <Box>
-                      <img src="../app/assets/img/no_results.svg" />
-                    </Box>
-                    <Box mt={4}>
-                      <Subhead>{t`It's quiet around here...`}</Subhead>
-                      <p>{t`Metabase couldn't find any results for this.`}</p>
-                    </Box>
-                  </Flex>
+                  <Card>
+                    <EmptyState
+                      title={t`No results`}
+                      message={t`Metabase couldn't find any results for your search.`}
+                      illustrationElement={
+                        <img src="app/assets/img/no_results.svg" />
+                      }
+                    />
+                  </Card>
                 );
               }
 
@@ -68,10 +68,15 @@ export default class SearchApp extends React.Component {
                       <div className="text-uppercase text-medium text-small text-bold my1">
                         {t`Dashboards`}
                       </div>
-                      <Card px={2}>
+                      <Card>
                         {types.dashboard.map(item => (
-                          <Link to={item.getUrl()} key={item.id}>
+                          <Link
+                            to={item.getUrl()}
+                            key={item.id}
+                            data-metabase-event="Search Results;Item Click;Dashboard"
+                          >
                             <EntityItem
+                              variant="list"
                               name={item.getName()}
                               iconName={item.getIcon()}
                               iconColor={item.getColor()}
@@ -86,10 +91,15 @@ export default class SearchApp extends React.Component {
                       <div className="text-uppercase text-medium text-small text-bold my1">
                         {t`Collections`}
                       </div>
-                      <Card px={2}>
+                      <Card>
                         {types.collection.map(item => (
-                          <Link to={item.getUrl()} key={item.id}>
+                          <Link
+                            to={item.getUrl()}
+                            key={item.id}
+                            data-metabase-event="Search Results;Item Click;Collection"
+                          >
                             <EntityItem
+                              variant="list"
                               name={item.getName()}
                               iconName={item.getIcon()}
                               iconColor={item.getColor()}
@@ -104,10 +114,15 @@ export default class SearchApp extends React.Component {
                       <div className="text-uppercase text-medium text-small text-bold my1">
                         {t`Questions`}
                       </div>
-                      <Card px={2}>
+                      <Card>
                         {types.card.map(item => (
-                          <Link to={item.getUrl()} key={item.id}>
+                          <Link
+                            to={item.getUrl()}
+                            key={item.id}
+                            data-metabase-event="Search Results;Item Click;Question"
+                          >
                             <EntityItem
+                              variant="list"
                               name={item.getName()}
                               iconName={item.getIcon()}
                               iconColor={item.getColor()}
@@ -122,10 +137,15 @@ export default class SearchApp extends React.Component {
                       <div className="text-uppercase text-medium text-small text-bold my1">
                         {t`Pulse`}
                       </div>
-                      <Card px={2}>
+                      <Card>
                         {types.pulse.map(item => (
-                          <Link to={item.getUrl()} key={item.id}>
+                          <Link
+                            to={item.getUrl()}
+                            key={item.id}
+                            data-metabase-event="Search Results;Item Click;Pulse"
+                          >
                             <EntityItem
+                              variant="list"
                               name={item.getName()}
                               iconName={item.getIcon()}
                               iconColor={item.getColor()}
@@ -138,7 +158,7 @@ export default class SearchApp extends React.Component {
                 </Box>
               );
             }}
-          </EntityListLoader>
+          </Search.ListLoader>
         </Box>
       </Box>
     );

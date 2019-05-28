@@ -2,7 +2,7 @@
 
 import React, { Component } from "react";
 import { Link } from "react-router";
-import { t, jt, ngettext, msgid } from "c-3po";
+import { t, jt, ngettext, msgid } from "ttag";
 import LoadingSpinner from "metabase/components/LoadingSpinner.jsx";
 import Tooltip from "metabase/components/Tooltip";
 import Icon from "metabase/components/Icon";
@@ -157,13 +157,13 @@ export default class QueryVisualization extends Component {
     const isPublicLinksEnabled = MetabaseSettings.get("public_sharing");
     const isEmbeddingEnabled = MetabaseSettings.get("embedding");
     return (
-      <div className="relative flex align-center flex-no-shrink mt2 mb1 sm-py3">
+      <div className="relative flex align-center flex-no-shrink mt2 mb1 px2 sm-py3">
         <div className="z4 absolute left hide sm-show">
           {!isObjectDetail && (
             <VisualizationSettings ref="settings" {...this.props} />
           )}
         </div>
-        <div className="z3 absolute left right">
+        <div className="z3 sm-absolute left right">
           <Tooltip tooltip={runButtonTooltip}>
             <RunButton
               isRunnable={isRunnable}
@@ -250,7 +250,7 @@ export default class QueryVisualization extends Component {
           <VisualizationResult
             lastRunDatasetQuery={this.state.lastRunDatasetQuery}
             onUpdateWarnings={warnings => this.setState({ warnings })}
-            onOpenChartSettings={() => this.refs.settings.open()}
+            onOpenChartSettings={initial => this.refs.settings.open(initial)}
             {...this.props}
             className="spread"
           />
@@ -290,8 +290,7 @@ export default class QueryVisualization extends Component {
 
 export const VisualizationEmptyState = ({ showTutorialLink }) => (
   <div className="flex full layout-centered text-light flex-column">
-    <h1
-    >{t`If you give me some data I can show you something cool. Run a Query!`}</h1>
+    <h1>{t`If you give me some data I can show you something cool. Run a Query!`}</h1>
     {showTutorialLink && (
       <Link
         to={Urls.question(null, "?tutorial")}

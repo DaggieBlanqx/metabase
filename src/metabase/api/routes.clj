@@ -4,7 +4,7 @@
              [route :as route]]
             [metabase.api
              [activity :as activity]
-             [alert    :as alert]
+             [alert :as alert]
              [automagic-dashboards :as magic]
              [card :as card]
              [collection :as collection]
@@ -15,7 +15,6 @@
              [embed :as embed]
              [field :as field]
              [geojson :as geojson]
-             [getting-started :as getting-started]
              [ldap :as ldap]
              [metric :as metric]
              [notify :as notify]
@@ -31,29 +30,32 @@
              [setup :as setup]
              [slack :as slack]
              [table :as table]
+             [task :as task]
              [tiles :as tiles]
              [user :as user]
              [util :as util]]
-            [metabase.middleware :as middleware]
-            [puppetlabs.i18n.core :refer [tru]]))
+            [metabase.middleware
+             [auth :as middleware.auth]
+             [exceptions :as middleware.exceptions]]
+            [metabase.util.i18n :refer [tru]]))
 
 (def ^:private +generic-exceptions
   "Wrap ROUTES so any Exception thrown is just returned as a generic 400, to prevent details from leaking in public
   endpoints."
-  middleware/genericize-exceptions)
+  middleware.exceptions/genericize-exceptions)
 
 (def ^:private +message-only-exceptions
   "Wrap ROUTES so any Exception thrown is just returned as a 400 with only the message from the original
   Exception (i.e., remove the original stacktrace), to prevent details from leaking in public endpoints."
-  middleware/message-only-exceptions)
+  middleware.exceptions/message-only-exceptions)
 
 (def ^:private +apikey
   "Wrap ROUTES so they may only be accessed with proper apikey credentials."
-  middleware/enforce-api-key)
+  middleware.auth/enforce-api-key)
 
 (def ^:private +auth
   "Wrap ROUTES so they may only be accessed with proper authentiaction credentials."
-  middleware/enforce-authentication)
+  middleware.auth/enforce-authentication)
 
 (defroutes ^{:doc "Ring routes for API endpoints."} routes
   (context "/activity"             [] (+auth activity/routes))
@@ -67,8 +69,7 @@
   (context "/email"                [] (+auth email/routes))
   (context "/embed"                [] (+message-only-exceptions embed/routes))
   (context "/field"                [] (+auth field/routes))
-  (context "/getting_started"      [] (+auth getting-started/routes))
-  (context "/geojson"              [] (+auth geojson/routes))
+  (context "/geojson"              [] geojson/routes)
   (context "/ldap"                 [] (+auth ldap/routes))
   (context "/metric"               [] (+auth metric/routes))
   (context "/notify"               [] (+apikey notify/routes))
@@ -84,6 +85,7 @@
   (context "/setup"                [] setup/routes)
   (context "/slack"                [] (+auth slack/routes))
   (context "/table"                [] (+auth table/routes))
+  (context "/task"                 [] (+auth task/routes))
   (context "/tiles"                [] (+auth tiles/routes))
   (context "/user"                 [] (+auth user/routes))
   (context "/util"                 [] util/routes)

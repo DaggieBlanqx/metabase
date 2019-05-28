@@ -1,7 +1,7 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
 import { connect } from "react-redux";
-import { t } from "c-3po";
+import { t } from "ttag";
 import QueryModeButton from "./QueryModeButton.jsx";
 
 import ActionButton from "metabase/components/ActionButton.jsx";
@@ -55,7 +55,10 @@ const mapDispatchToProps = {
 };
 const ICON_SIZE = 16;
 
-@connect(mapStateToProps, mapDispatchToProps)
+@connect(
+  mapStateToProps,
+  mapDispatchToProps,
+)
 export default class QueryHeader extends Component {
   constructor(props, context) {
     super(props, context);
@@ -474,7 +477,9 @@ export default class QueryHeader extends Component {
             items={[
               !isNew && Object.values(questionAlerts).length > 0
                 ? updateAlertItem
-                : isNew ? createAlertAfterSavingQuestionItem : createAlertItem,
+                : isNew
+                ? createAlertAfterSavingQuestionItem
+                : createAlertItem,
             ]}
           />
         </div>,
@@ -511,7 +516,7 @@ export default class QueryHeader extends Component {
 
   render() {
     return (
-      <div className="relative">
+      <div className="relative px2 sm-px0">
         <HeaderBar
           isEditing={this.props.isEditing}
           name={this.props.isNew ? t`New question` : this.props.card.name}
@@ -530,7 +535,10 @@ export default class QueryHeader extends Component {
           setItemAttributeFn={this.props.onSetCardAttribute}
           badge={
             this.props.card.id && (
-              <CollectionBadge collectionId={this.props.card.collection_id} />
+              <CollectionBadge
+                collectionId={this.props.card.collection_id}
+                analyticsContext="QueryBuilder"
+              />
             )
           }
         />

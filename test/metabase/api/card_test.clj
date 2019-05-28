@@ -1,20 +1,22 @@
 (ns metabase.api.card-test
   "Tests for /api/card endpoints."
   (:require [cheshire.core :as json]
+            [clojure.data.csv :as csv]
             [dk.ative.docjure.spreadsheet :as spreadsheet]
             [expectations :refer :all]
             [medley.core :as m]
             [metabase
              [email-test :as et]
              [http-client :as http :refer :all]
-             [middleware :as middleware]
              [util :as u]]
+            [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
+            [metabase.middleware.util :as middleware.u]
             [metabase.models
              [card :refer [Card]]
              [card-favorite :refer [CardFavorite]]
              [collection :refer [Collection]]
-             [database :refer [Database]]
              [dashboard :refer [Dashboard]]
+             [database :refer [Database]]
              [permissions :as perms]
              [permissions-group :as perms-group]
              [pulse :as pulse :refer [Pulse]]
@@ -23,11 +25,14 @@
              [pulse-channel-recipient :refer [PulseChannelRecipient]]
              [table :refer [Table]]
              [view-log :refer [ViewLog]]]
-            [metabase.query-processor.middleware.results-metadata :as results-metadata]
+            [metabase.query-processor.async :as qp.async]
+            [metabase.query-processor.middleware
+             [constraints :as constraints]
+             [results-metadata :as results-metadata]]
             [metabase.test
              [data :as data]
              [util :as tu :refer [match-$ random-name]]]
-            [metabase.test.data.users :refer :all]
+            [metabase.test.data.users :as test-users :refer :all]
             [metabase.util.date :as du]
             [toucan.db :as db]
             [toucan.util.test :as tt])
@@ -57,8 +62,8 @@
    (mbql-count-query (data/id) (data/id :venues)))
   ([db-or-id table-or-id]
    {:database (u/get-id db-or-id)
-    :type     "query"
-    :query    {:source-table (u/get-id table-or-id), :aggregation {:aggregation-type "count"}}}))
+    :type     :query
+    :query    {:source-table (u/get-id table-or-id), :aggregation [[:count]]}}))
 
 (defn- card-with-name-and-query
   ([]
@@ -90,16 +95,17 @@
 
 
 (defn do-with-cards-in-a-collection [card-or-cards-or-ids grant-perms-fn! f]
-  (tt/with-temp Collection [collection]
-    ;; put all the Card(s) in our temp `collection`
-    (doseq [card-or-id (if (sequential? card-or-cards-or-ids)
-                         card-or-cards-or-ids
-                         [card-or-cards-or-ids])]
-      (db/update! Card (u/get-id card-or-id) {:collection_id (u/get-id collection)}))
-    ;; now use `grant-perms-fn!` to grant appropriate perms
-    (grant-perms-fn! (perms-group/all-users) collection)
-    ;; call (f)
-    (f)))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      ;; put all the Card(s) in our temp `collection`
+      (doseq [card-or-id (if (sequential? card-or-cards-or-ids)
+                           card-or-cards-or-ids
+                           [card-or-cards-or-ids])]
+        (db/update! Card (u/get-id card-or-id) {:collection_id (u/get-id collection)}))
+      ;; now use `grant-perms-fn!` to grant appropriate perms
+      (grant-perms-fn! (perms-group/all-users) collection)
+      ;; call (f)
+      (f))))
 
 (defmacro with-cards-in-readable-collection
   "Execute `body` with `card-or-cards-or-ids` added to a temporary Collection that All Users have read permissions for."
@@ -123,7 +129,7 @@
                         {:database (u/get-id db)
                          :type     :native
                          :native   {:query         "SELECT COUNT(*) FROM VENUES WHERE CATEGORY_ID = {{category}};"
-                                    :template_tags {:category {:id           "a9001580-3bcc-b827-ce26-1dbc82429163"
+                                    :template-tags {:category {:id           "a9001580-3bcc-b827-ce26-1dbc82429163"
                                                                :name         "category"
                                                                :display_name "Category"
                                                                :type         "number"
@@ -158,8 +164,8 @@
        3 (card-returned? :database db        card-2)))))
 
 
-(expect (get middleware/response-unauthentic :body) (http/client :get 401 "card"))
-(expect (get middleware/response-unauthentic :body) (http/client :put 401 "card/13"))
+(expect (get middleware.u/response-unauthentic :body) (http/client :get 401 "card"))
+(expect (get middleware.u/response-unauthentic :body) (http/client :put 401 "card/13"))
 
 
 ;; Make sure `model_id` is required when `f` is :database
@@ -260,21 +266,20 @@
 
 ;; Test that we can make a card
 (let [card-name (random-name)]
-  (tt/expect-with-temp [Database   [db]
-                        Table      [table {:db_id (u/get-id db)}]
-                        Collection [collection]]
+  (expect
     (merge card-defaults
            {:name                   card-name
-            :collection_id          (u/get-id collection)
-            :collection             collection
+            :collection_id          true
+            :collection             true
             :creator_id             (user->id :rasta)
-            :dataset_query          (mbql-count-query (u/get-id db) (u/get-id table))
+            :dataset_query          true
             :visualization_settings {:global {:title nil}}
-            :database_id            (u/get-id db) ; these should be inferred automatically
-            :table_id               (u/get-id table)
+            :database_id            true
+            :table_id               true
             :can_write              true
             :dashboard_count        0
             :read_permissions       nil
+            :result_metadata        true
             :creator                (match-$ (fetch-user :rasta)
                                       {:common_name  "Rasta Toucan"
                                        :is_superuser false
@@ -285,12 +290,20 @@
                                        :date_joined  $
                                        :email        "rasta@metabase.com"
                                        :id           $})})
-    (tu/with-model-cleanup [Card]
-      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-      (-> ((user->client :rasta) :post 200 "card"
-           (assoc (card-with-name-and-query card-name (mbql-count-query (u/get-id db) (u/get-id table)))
-             :collection_id (u/get-id collection)))
-          (dissoc :created_at :updated_at :id)))))
+    (tu/with-non-admin-groups-no-root-collection-perms
+      (tt/with-temp* [Collection [collection]]
+        (tu/with-model-cleanup [Card]
+          (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+          (-> ((user->client :rasta) :post 200 "card"
+               (assoc (card-with-name-and-query card-name (mbql-count-query (data/id) (data/id :venues)))
+                 :collection_id (u/get-id collection)))
+              (dissoc :created_at :updated_at :id)
+              (update :table_id integer?)
+              (update :database_id integer?)
+              (update :collection_id integer?)
+              (update :dataset_query map?)
+              (update :collection map?)
+              (update :result_metadata (partial every? map?))))))))
 
 ;; Make sure when saving a Card the query metadata is saved (if correct)
 (expect
@@ -298,22 +311,61 @@
     :display_name "Count Chocula"
     :name         "count_chocula"
     :special_type "type/Number"}]
-  (let [metadata [{:base_type    :type/Integer
-                   :display_name "Count Chocula"
-                   :name         "count_chocula"
-                   :special_type :type/Number}]
-        card-name (tu/random-name)]
-    (tt/with-temp Collection [collection]
-      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-      (tu/with-model-cleanup [Card]
-        ;; create a card with the metadata
-        ((user->client :rasta) :post 200 "card"
-         (assoc (card-with-name-and-query card-name)
-           :collection_id      (u/get-id collection)
-           :result_metadata    metadata
-           :metadata_checksum  (#'results-metadata/metadata-checksum metadata)))
-        ;; now check the metadata that was saved in the DB
-        (db/select-one-field :result_metadata Card :name card-name)))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (let [metadata  [{:base_type    :type/Integer
+                      :display_name "Count Chocula"
+                      :name         "count_chocula"
+                      :special_type :type/Number}]
+          card-name (tu/random-name)]
+      (tt/with-temp Collection [collection]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        (tu/with-model-cleanup [Card]
+          ;; create a card with the metadata
+          ((user->client :rasta) :post 200 "card"
+           (assoc (card-with-name-and-query card-name)
+             :collection_id      (u/get-id collection)
+             :result_metadata    metadata
+             :metadata_checksum  (#'results-metadata/metadata-checksum metadata)))
+          ;; now check the metadata that was saved in the DB
+          (db/select-one-field :result_metadata Card :name card-name))))))
+
+(defn- fingerprint-integers->doubles
+  "Converts the min/max fingerprint values to doubles so simulate how the FE will change the metadata when POSTing a
+  new card"
+  [metadata]
+  (update metadata :fingerprint (fn [fingerprint] (-> fingerprint
+                                                      (update-in [:type :type/Number :min] double)
+                                                      (update-in [:type :type/Number :max] double)))))
+
+;; When integer values are passed to the FE, they will be returned as floating point values. Our hashing should ensure
+;; that integer and floating point values hash the same so we don't needlessly rerun the query
+(expect
+  [{:base_type    "type/Integer"
+    :display_name "Count Chocula"
+    :name         "count_chocula"
+    :special_type "type/Number"
+    :fingerprint  {:global {:distinct-count 285},
+                   :type {:type/Number {:min 5.0, :max 2384.0, :avg 1000.2}}}}]
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (let [metadata  [{:base_type    :type/Integer
+                      :display_name "Count Chocula"
+                      :name         "count_chocula"
+                      :special_type :type/Number
+                      :fingerprint  {:global {:distinct-count 285},
+                                     :type {:type/Number {:min 5, :max 2384, :avg 1000.2}}}}]
+          card-name (tu/random-name)]
+      (tt/with-temp Collection [collection]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        (tu/throw-if-called qp.async/result-metadata-for-query-async
+          (tu/with-model-cleanup [Card]
+            ;; create a card with the metadata
+            ((user->client :rasta) :post 200 "card"
+             (assoc (card-with-name-and-query card-name)
+               :collection_id      (u/get-id collection)
+               :result_metadata    (map fingerprint-integers->doubles metadata)
+               :metadata_checksum  (#'results-metadata/metadata-checksum metadata)))
+            ;; now check the metadata that was saved in the DB
+            (db/select-one-field :result_metadata Card :name card-name)))))))
 
 ;; make sure when saving a Card the correct query metadata is fetched (if incorrect)
 (expect
@@ -321,47 +373,90 @@
     :display_name "count"
     :name         "count"
     :special_type "type/Quantity"
-    :fingerprint  {:global {:distinct-count 1},
-                   :type   {:type/Number {:min 100, :max 100, :avg 100.0}}}}]
-  (let [metadata  [{:base_type    :type/Integer
-                    :display_name "Count Chocula"
-                    :name         "count_chocula"
-                    :special_type :type/Quantity}]
-        card-name (tu/random-name)]
-    (tt/with-temp Collection [collection]
-      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-      (tu/with-model-cleanup [Card]
-        ;; create a card with the metadata
-        ((user->client :rasta) :post 200 "card"
-         (assoc (card-with-name-and-query card-name)
-           :collection_id      (u/get-id collection)
-           :result_metadata    metadata
-           :metadata_checksum  "ABCDEF")) ; bad checksum
-        ;; now check the correct metadata was fetched and was saved in the DB
-        (db/select-one-field :result_metadata Card :name card-name)))))
+    :fingerprint  {:global {:distinct-count 1
+                            :nil%           0.0},
+                   :type   {:type/Number {:min 100.0, :max 100.0, :avg 100.0, :q1 100.0, :q3 100.0 :sd nil}}}}]
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (let [metadata  [{:base_type    :type/Integer
+                      :display_name "Count Chocula"
+                      :name         "count_chocula"
+                      :special_type :type/Quantity}]
+          card-name (tu/random-name)]
+      (tt/with-temp Collection [collection]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        (tu/with-model-cleanup [Card]
+          ;; create a card with the metadata
+          ((user->client :rasta) :post 200 "card"
+           (assoc (card-with-name-and-query card-name)
+             :collection_id      (u/get-id collection)
+             :result_metadata    metadata
+             :metadata_checksum  "ABCDEF")) ; bad checksum
+          ;; now check the correct metadata was fetched and was saved in the DB
+          (db/select-one-field :result_metadata Card :name card-name))))))
+
+;; Check that the generated query to fetch the query result metadata includes user information in the generated query
+(expect
+  {:metadata-results     [{:base_type    "type/Integer"
+                           :display_name "count"
+                           :name         "count"
+                           :special_type "type/Quantity"
+                           :fingerprint  {:global {:distinct-count 1
+                                                   :nil%           0.0},
+                                          :type   {:type/Number {:min 100.0, :max 100.0, :avg 100.0, :q1 100.0, :q3 100.0 :sd nil}}}}]
+   :has-user-id-remark? true}
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (let [metadata  [{:base_type    :type/Integer
+                      :display_name "Count Chocula"
+                      :name         "count_chocula"
+                      :special_type :type/Quantity}]
+          card-name (tu/random-name)]
+      (tt/with-temp Collection [collection]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        (tu/with-model-cleanup [Card]
+          ;; Rebind the `cancelable-run-query` function so that we can capture the generated SQL and inspect it
+          (let [orig-fn    (var-get #'sql-jdbc.execute/cancelable-run-query)
+                sql-result (atom [])]
+            (with-redefs [sql-jdbc.execute/cancelable-run-query (fn [db sql params opts]
+                                                                  (swap! sql-result conj sql)
+                                                                  (orig-fn db sql params opts))]
+              ;; create a card with the metadata
+              ((user->client :rasta) :post 200 "card"
+               (assoc (card-with-name-and-query card-name)
+                 :collection_id      (u/get-id collection)
+                 :result_metadata    metadata
+                 :metadata_checksum  "ABCDEF"))) ; bad checksum
+            ;; now check the correct metadata was fetched and was saved in the DB
+            {:metadata-results    (db/select-one-field :result_metadata Card :name card-name)
+             ;; Was the user id found in the generated SQL?
+             :has-user-id-remark? (-> (str "userID: " (user->id :rasta))
+                                      re-pattern
+                                      (re-find (first @sql-result))
+                                      boolean)}))))))
 
 ;; Make sure we can create a Card with a Collection position
 (expect
   #metabase.models.card.CardInstance{:collection_id true, :collection_position 1}
-  (tu/with-model-cleanup [Card]
-    (let [card-name (tu/random-name)]
-      (tt/with-temp Collection [collection]
-        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-        ((user->client :rasta) :post 200 "card" (assoc (card-with-name-and-query card-name)
-                                                  :collection_id (u/get-id collection), :collection_position 1))
-        (some-> (db/select-one [Card :collection_id :collection_position] :name card-name)
-                (update :collection_id (partial = (u/get-id collection))))))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tu/with-model-cleanup [Card]
+      (let [card-name (tu/random-name)]
+        (tt/with-temp Collection [collection]
+          (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+          ((user->client :rasta) :post 200 "card" (assoc (card-with-name-and-query card-name)
+                                                    :collection_id (u/get-id collection), :collection_position 1))
+          (some-> (db/select-one [Card :collection_id :collection_position] :name card-name)
+                  (update :collection_id (partial = (u/get-id collection)))))))))
 
 ;; ...but not if we don't have permissions for the Collection
 (expect
   nil
-  (tu/with-model-cleanup [Card]
-    (let [card-name (tu/random-name)]
-      (tt/with-temp Collection [collection]
-        ((user->client :rasta) :post 403 "card" (assoc (card-with-name-and-query card-name)
-                                                  :collection_id (u/get-id collection), :collection_position 1))
-        (some-> (db/select-one [Card :collection_id :collection_position] :name card-name)
-                (update :collection_id (partial = (u/get-id collection))))))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tu/with-model-cleanup [Card]
+      (let [card-name (tu/random-name)]
+        (tt/with-temp Collection [collection]
+          ((user->client :rasta) :post 403 "card" (assoc (card-with-name-and-query card-name)
+                                                    :collection_id (u/get-id collection), :collection_position 1))
+          (some-> (db/select-one [Card :collection_id :collection_position] :name card-name)
+                  (update :collection_id (partial = (u/get-id collection)))))))))
 
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -369,11 +464,13 @@
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
 ;; Test that we can fetch a card
-(tt/expect-with-temp [Database   [db]
-                      Table      [table {:db_id (u/get-id db)}]
+(tt/expect-with-temp [Database   [db          (select-keys (data/db) [:engine :details])]
+                      Table      [table       (-> (Table (data/id :venues))
+                                                  (dissoc :id)
+                                                  (assoc :db_id (u/get-id db)))]
                       Collection [collection]
-                      Card       [card  {:collection_id (u/get-id collection)
-                                         :dataset_query (mbql-count-query (u/get-id db) (u/get-id table))}]]
+                      Card       [card        {:collection_id (u/get-id collection)
+                                               :dataset_query (mbql-count-query (u/get-id db) (u/get-id table))}]]
   (merge card-defaults
          (match-$ card
            {:dashboard_count        0
@@ -390,12 +487,12 @@
                                        :email        "rasta@metabase.com"
                                        :id           $})
             :updated_at             $
-            :dataset_query          $
+            :dataset_query          (tu/obj->json->obj (:dataset_query card))
             :read_permissions       nil
             :id                     $
             :display                "table"
             :visualization_settings {}
-            :can_write              false
+            :can_write              true
             :created_at             $
             :database_id            (u/get-id db) ; these should be inferred from the dataset_query
             :table_id               (u/get-id table)
@@ -408,13 +505,14 @@
 ;; Check that a user without permissions isn't allowed to fetch the card
 (expect
   "You don't have permissions to do that."
-  (tt/with-temp* [Database [db]
-                  Table    [table    {:db_id (u/get-id db)}]
-                  Card     [card              {:dataset_query (mbql-count-query (u/get-id db) (u/get-id table))}]]
-    ;; revoke permissions for default group to this database
-    (perms/delete-related-permissions! (perms-group/all-users) (perms/object-path (u/get-id db)))
-    ;; now a non-admin user shouldn't be able to fetch this card
-    ((user->client :rasta) :get 403 (str "card/" (u/get-id card)))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Database [db]
+                    Table    [table {:db_id (u/get-id db)}]
+                    Card     [card  {:dataset_query (mbql-count-query (u/get-id db) (u/get-id table))}]]
+      ;; revoke permissions for default group to this database
+      (perms/revoke-permissions! (perms-group/all-users) (u/get-id db))
+      ;; now a non-admin user shouldn't be able to fetch this card
+      ((user->client :rasta) :get 403 (str "card/" (u/get-id card))))))
 
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -455,10 +553,11 @@
 ;; we shouldn't be able to update archived status if we don't have collection *write* perms
 (expect
   "You don't have permissions to do that."
-  (tt/with-temp* [Collection [collection]
-                  Card       [card {:collection_id (u/get-id collection)}]]
-    (perms/grant-collection-read-permissions! (perms-group/all-users) collection)
-    ((user->client :rasta) :put 403 (str "card/" (u/get-id card)) {:archived true})))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [collection]
+                    Card       [card {:collection_id (u/get-id collection)}]]
+      (perms/grant-collection-read-permissions! (perms-group/all-users) collection)
+      ((user->client :rasta) :put 403 (str "card/" (u/get-id card)) {:archived true}))))
 
 ;; Can we clear the description of a Card? (#4738)
 (expect
@@ -524,8 +623,9 @@
     :display_name "count"
     :name         "count"
     :special_type "type/Quantity"
-    :fingerprint  {:global {:distinct-count 1},
-                   :type   {:type/Number {:min 100, :max 100, :avg 100.0}}}}]
+    :fingerprint  {:global {:distinct-count 1
+                            :nil%           0.0},
+                   :type   {:type/Number {:min 100.0, :max 100.0, :avg 100.0, :q1 100.0, :q3 100.0 :sd nil}}}}]
   (let [metadata [{:base_type    :type/Integer
                    :display_name "Count Chocula"
                    :name         "count_chocula"
@@ -561,19 +661,22 @@
 ;; ...we shouldn't be able to if we don't have permissions for the Collection
 (expect
   nil
-  (tt/with-temp* [Collection [collection]
-                  Card       [card {:collection_id (u/get-id collection)}]]
-    ((user->client :rasta) :put 403 (str "card/" (u/get-id card))
-     {:collection_position 1})
-    (db/select-one-field :collection_position Card :id (u/get-id card))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [collection]
+                    Card       [card {:collection_id (u/get-id collection)}]]
+      ((user->client :rasta) :put 403 (str "card/" (u/get-id card))
+       {:collection_position 1})
+      (db/select-one-field :collection_position Card :id (u/get-id card)))))
 
 (expect
   1
-  (tt/with-temp* [Collection [collection]
-                  Card       [card {:collection_id (u/get-id collection), :collection_position 1}]]
-    ((user->client :rasta) :put 403 (str "card/" (u/get-id card))
-     {:collection_position nil})
-    (db/select-one-field :collection_position Card :id (u/get-id card))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [collection]
+                    Card       [card {:collection_id (u/get-id collection), :collection_position 1}]]
+      ((user->client :rasta) :put 403 (str "card/" (u/get-id card))
+       {:collection_position nil})
+      (db/select-one-field :collection_position Card :id (u/get-id card)))))
+
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                      UPDATING THE POSITION OF A CARDS                                          |
@@ -606,15 +709,16 @@
    "a" 2
    "b" 3
    "d" 4}
-  (tt/with-temp Collection [collection]
-    (with-ordered-items collection [Card a
-                                    Card b
-                                    Card c
-                                    Card d]
-      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-      ((user->client :rasta) :put 200 (str "card/" (u/get-id c))
-       {:collection_position 1})
-      (get-name->collection-position :rasta collection))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      (with-ordered-items collection [Card a
+                                      Card b
+                                      Card c
+                                      Card d]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        ((user->client :rasta) :put 200 (str "card/" (u/get-id c))
+         {:collection_position 1})
+        (get-name->collection-position :rasta collection)))))
 
 ;; Change the position of the 4th card to 1st, all other cards should inc their position
 (expect
@@ -622,15 +726,16 @@
    "a" 2
    "b" 3
    "c" 4}
-  (tt/with-temp Collection [collection]
-    (with-ordered-items collection [Dashboard a
-                                    Dashboard b
-                                    Pulse     c
-                                    Card      d]
-      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-      ((user->client :rasta) :put 200 (str "card/" (u/get-id d))
-       {:collection_position 1})
-      (get-name->collection-position :rasta collection))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      (with-ordered-items collection [Dashboard a
+                                      Dashboard b
+                                      Pulse     c
+                                      Card      d]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        ((user->client :rasta) :put 200 (str "card/" (u/get-id d))
+         {:collection_position 1})
+        (get-name->collection-position :rasta collection)))))
 
 ;; Change the position of the 1st card to the 4th, all of the other items dec
 (expect
@@ -638,15 +743,16 @@
    "c" 2
    "d" 3
    "a" 4}
-  (tt/with-temp Collection [collection]
-    (with-ordered-items collection [Card      a
-                                    Dashboard b
-                                    Pulse     c
-                                    Dashboard d]
-      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-      ((user->client :rasta) :put 200 (str "card/" (u/get-id a))
-       {:collection_position 4})
-      (get-name->collection-position :rasta collection))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      (with-ordered-items collection [Card      a
+                                      Dashboard b
+                                      Pulse     c
+                                      Dashboard d]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        ((user->client :rasta) :put 200 (str "card/" (u/get-id a))
+         {:collection_position 4})
+        (get-name->collection-position :rasta collection)))))
 
 ;; Change the position of a card from nil to 2nd, should adjust the existing items
 (expect
@@ -654,16 +760,17 @@
    "b" 2
    "c" 3
    "d" 4}
-  (tt/with-temp* [Collection [{coll-id :id :as collection}]
-                  Card       [_ {:name "a", :collection_id coll-id, :collection_position 1}]
-                  ;; Card b does not start with a collection_position
-                  Card       [b {:name "b", :collection_id coll-id}]
-                  Dashboard  [_ {:name "c", :collection_id coll-id, :collection_position 2}]
-                  Card       [_ {:name "d", :collection_id coll-id, :collection_position 3}]]
-    (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-    ((user->client :rasta) :put 200 (str "card/" (u/get-id b))
-     {:collection_position 2})
-    (get-name->collection-position :rasta coll-id)))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [{coll-id :id :as collection}]
+                    Card       [_ {:name "a", :collection_id coll-id, :collection_position 1}]
+                    ;; Card b does not start with a collection_position
+                    Card       [b {:name "b", :collection_id coll-id}]
+                    Dashboard  [_ {:name "c", :collection_id coll-id, :collection_position 2}]
+                    Card       [_ {:name "d", :collection_id coll-id, :collection_position 3}]]
+      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+      ((user->client :rasta) :put 200 (str "card/" (u/get-id b))
+       {:collection_position 2})
+      (get-name->collection-position :rasta coll-id))))
 
 ;; Update an existing card to no longer have a position, should dec items after it's position
 (expect
@@ -671,15 +778,16 @@
    "b" nil
    "c" 2
    "d" 3}
-  (tt/with-temp Collection [collection]
-    (with-ordered-items collection [Card      a
-                                    Card      b
-                                    Dashboard c
-                                    Pulse     d]
-      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-      ((user->client :rasta) :put 200 (str "card/" (u/get-id b))
-       {:collection_position nil})
-      (get-name->collection-position :rasta collection))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      (with-ordered-items collection [Card      a
+                                      Card      b
+                                      Dashboard c
+                                      Pulse     d]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        ((user->client :rasta) :put 200 (str "card/" (u/get-id b))
+         {:collection_position nil})
+        (get-name->collection-position :rasta collection)))))
 
 ;; Change the collection the card is in, leave the position, should cause old and new collection to have their
 ;; positions updated
@@ -692,22 +800,23 @@
    {"e" 1
     "g" 2
     "h" 3}]
-  (tt/with-temp* [Collection [collection-1]
-                  Collection [collection-2]]
-    (with-ordered-items collection-1 [Dashboard a
-                                      Card      b
-                                      Pulse     c
-                                      Dashboard d]
-      (with-ordered-items collection-2 [Pulse     e
-                                        Card      f
-                                        Card      g
-                                        Dashboard h]
-        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection-1)
-        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection-2)
-        ((user->client :rasta) :put 200 (str "card/" (u/get-id f))
-         {:collection_id (u/get-id collection-1)})
-        [(get-name->collection-position :rasta collection-1)
-         (get-name->collection-position :rasta collection-2)]))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [collection-1]
+                    Collection [collection-2]]
+      (with-ordered-items collection-1 [Dashboard a
+                                        Card      b
+                                        Pulse     c
+                                        Dashboard d]
+        (with-ordered-items collection-2 [Pulse     e
+                                          Card      f
+                                          Card      g
+                                          Dashboard h]
+          (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection-1)
+          (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection-2)
+          ((user->client :rasta) :put 200 (str "card/" (u/get-id f))
+           {:collection_id (u/get-id collection-1)})
+          [(get-name->collection-position :rasta collection-1)
+           (get-name->collection-position :rasta collection-2)])))))
 
 ;; Change the collection and the position, causing both collections and the updated card to have their order changed
 (expect
@@ -719,22 +828,23 @@
    {"e" 1
     "f" 2
     "g" 3}]
-  (tt/with-temp* [Collection [collection-1]
-                  Collection [collection-2]]
-    (with-ordered-items collection-1 [Pulse     a
-                                      Pulse     b
-                                      Dashboard c
-                                      Dashboard d]
-      (with-ordered-items collection-2 [Dashboard e
-                                        Dashboard f
-                                        Pulse     g
-                                        Card      h]
-        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection-1)
-        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection-2)
-        ((user->client :rasta) :put 200 (str "card/" (u/get-id h))
-         {:collection_position 1, :collection_id (u/get-id collection-1)})
-        [(get-name->collection-position :rasta collection-1)
-         (get-name->collection-position :rasta collection-2)]))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [collection-1]
+                    Collection [collection-2]]
+      (with-ordered-items collection-1 [Pulse     a
+                                        Pulse     b
+                                        Dashboard c
+                                        Dashboard d]
+        (with-ordered-items collection-2 [Dashboard e
+                                          Dashboard f
+                                          Pulse     g
+                                          Card      h]
+          (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection-1)
+          (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection-2)
+          ((user->client :rasta) :put 200 (str "card/" (u/get-id h))
+           {:collection_position 1, :collection_id (u/get-id collection-1)})
+          [(get-name->collection-position :rasta collection-1)
+           (get-name->collection-position :rasta collection-2)])))))
 
 ;; Add a new card to an existing collection at position 1, will cause all existing positions to increment by 1
 (expect
@@ -747,19 +857,20 @@
     "b" 2
     "c" 3
     "d" 4}]
-  (tt/with-temp Collection [collection]
-    (tu/with-model-cleanup [Card]
-      (with-ordered-items collection [Dashboard b
-                                      Pulse     c
-                                      Card      d]
-        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-        [(get-name->collection-position :rasta collection)
-         (do
-           ((user->client :rasta) :post 200 "card"
-            (merge (card-with-name-and-query "a")
-                   {:collection_id       (u/get-id collection)
-                    :collection_position 1}))
-           (get-name->collection-position :rasta collection))]))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      (tu/with-model-cleanup [Card]
+        (with-ordered-items collection [Dashboard b
+                                        Pulse     c
+                                        Card      d]
+          (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+          [(get-name->collection-position :rasta collection)
+           (do
+             ((user->client :rasta) :post 200 "card"
+              (merge (card-with-name-and-query "a")
+                     {:collection_id       (u/get-id collection)
+                      :collection_position 1}))
+             (get-name->collection-position :rasta collection))])))))
 
 ;; Add a new card to the end of an existing collection
 (expect
@@ -772,19 +883,20 @@
     "b" 2
     "c" 3
     "d" 4}]
-  (tt/with-temp Collection [collection]
-    (tu/with-model-cleanup [Card]
-      (with-ordered-items collection [Card      a
-                                      Dashboard b
-                                      Pulse     c]
-        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-        [(get-name->collection-position :rasta collection)
-         (do
-           ((user->client :rasta) :post 200 "card"
-            (merge (card-with-name-and-query "d")
-                   {:collection_id (u/get-id collection)
-                    :collection_position 4}))
-           (get-name->collection-position :rasta collection))]))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      (tu/with-model-cleanup [Card]
+        (with-ordered-items collection [Card      a
+                                        Dashboard b
+                                        Pulse     c]
+          (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+          [(get-name->collection-position :rasta collection)
+           (do
+             ((user->client :rasta) :post 200 "card"
+              (merge (card-with-name-and-query "d")
+                     {:collection_id       (u/get-id collection)
+                      :collection_position 4}))
+             (get-name->collection-position :rasta collection))])))))
 
 ;; When adding a new card to a collection that does not have a position, it should not change existing positions
 (expect
@@ -797,19 +909,20 @@
     "b" 2
     "c" 3
     "d" nil}]
-  (tt/with-temp Collection [collection]
-    (tu/with-model-cleanup [Card]
-      (with-ordered-items collection [Pulse     a
-                                      Card      b
-                                      Dashboard c]
-        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-        [(get-name->collection-position :rasta collection)
-         (do
-           ((user->client :rasta) :post 200 "card"
-            (merge (card-with-name-and-query "d")
-                   {:collection_id       (u/get-id collection)
-                    :collection_position nil}))
-           (get-name->collection-position :rasta collection))]))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      (tu/with-model-cleanup [Card]
+        (with-ordered-items collection [Pulse     a
+                                        Card      b
+                                        Dashboard c]
+          (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+          [(get-name->collection-position :rasta collection)
+           (do
+             ((user->client :rasta) :post 200 "card"
+              (merge (card-with-name-and-query "d")
+                     {:collection_id       (u/get-id collection)
+                      :collection_position nil}))
+             (get-name->collection-position :rasta collection))])))))
 
 (expect
   {"d" 1
@@ -818,17 +931,19 @@
    "c" 4
    "e" 5
    "f" 6}
-  (tt/with-temp Collection [collection]
-    (with-ordered-items collection [Dashboard a
-                                    Dashboard b
-                                    Card      c
-                                    Card      d
-                                    Pulse     e
-                                    Pulse     f]
-      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-      ((user->client :rasta) :put 200 (str "card/" (u/get-id d))
-       {:collection_position 1, :collection_id (u/get-id collection)})
-      (name->position ((user->client :rasta) :get 200 (format "collection/%s/items" (u/get-id collection)))))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      (with-ordered-items collection [Dashboard a
+                                      Dashboard b
+                                      Card      c
+                                      Card      d
+                                      Pulse     e
+                                      Pulse     f]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        ((user->client :rasta) :put 200 (str "card/" (u/get-id d))
+         {:collection_position 1, :collection_id (u/get-id collection)})
+        (name->position ((user->client :rasta) :get 200 (format "collection/%s/items" (u/get-id collection))))))))
+
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                        Card updates that impact alerts                                         |
@@ -1134,6 +1249,38 @@
            (spreadsheet/select-sheet "Query result")
            (spreadsheet/select-columns {:A :col})))))
 
+;; Downloading CSV/JSON/XLSX results shouldn't be subject to the default query constraints -- even if the query comes
+;; in with `add-default-userland-constraints` (as will be the case if the query gets saved from one that had it -- see
+;; #9831)
+(expect
+  101
+  (with-redefs [constraints/default-query-constraints {:max-results 10, :max-results-bare-rows 10}]
+    (tt/with-temp Card [card {:dataset_query {:database (data/id)
+                                              :type     :query
+                                              :query    {:source-table (data/id :venues)}
+                                              :middleware
+                                              {:add-default-userland-constraints? true
+                                               :userland-query?                   true}}}]
+      (with-cards-in-readable-collection card
+        (let [results ((user->client :rasta) :post 200 (format "card/%d/query/csv" (u/get-id card)))]
+          (count (csv/read-csv results)))))))
+
+;; non-"download" queries should still get the default constraints
+;; (this also is a sanitiy check to make sure the `with-redefs` in the test above actually works)
+(expect
+  10
+  (with-redefs [constraints/default-query-constraints {:max-results 10, :max-results-bare-rows 10}]
+    (tt/with-temp Card [card {:dataset_query {:database (data/id)
+                                              :type     :query
+                                              :query    {:source-table (data/id :venues)}
+                                              :middleware
+                                              {:add-default-userland-constraints? true
+                                               :userland-query?                   true}}}]
+      (with-cards-in-readable-collection card
+        (let [{row-count :row_count, :as result}
+              ((user->client :rasta) :post 200 (format "card/%d/query" (u/get-id card)))]
+          (or row-count result))))))
+
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                                  COLLECTIONS                                                   |
@@ -1141,23 +1288,25 @@
 
 ;; Make sure we can create a card and specify its `collection_id` at the same time
 (expect
-  (tt/with-temp Collection [collection]
-    (tu/with-model-cleanup [Card]
-      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-      (let [card ((user->client :rasta) :post 200 "card"
-                  (assoc (card-with-name-and-query)
-                    :collection_id (u/get-id collection)))]
-        (= (db/select-one-field :collection_id Card :id (u/get-id card))
-           (u/get-id collection))))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp Collection [collection]
+      (tu/with-model-cleanup [Card]
+        (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+        (let [card ((user->client :rasta) :post 200 "card"
+                    (assoc (card-with-name-and-query)
+                      :collection_id (u/get-id collection)))]
+          (= (db/select-one-field :collection_id Card :id (u/get-id card))
+             (u/get-id collection)))))))
 
 ;; Make sure we card creation fails if we try to set a `collection_id` we don't have permissions for
 (expect
   "You don't have permissions to do that."
-  (tu/with-model-cleanup [Card]
-    (tt/with-temp Collection [collection]
-      ((user->client :rasta) :post 403 "card"
-       (assoc (card-with-name-and-query)
-         :collection_id (u/get-id collection))))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tu/with-model-cleanup [Card]
+      (tt/with-temp Collection [collection]
+        ((user->client :rasta) :post 403 "card"
+         (assoc (card-with-name-and-query)
+           :collection_id (u/get-id collection)))))))
 
 ;; Make sure we can change the `collection_id` of a Card if it's not in any collection
 (expect
@@ -1170,40 +1319,44 @@
 ;; Make sure we can still change *anything* for a Card if we don't have permissions for the Collection it belongs to
 (expect
   "You don't have permissions to do that."
-  (tt/with-temp* [Collection [collection]
-                  Card       [card       {:collection_id (u/get-id collection)}]]
-    ((user->client :rasta) :put 403 (str "card/" (u/get-id card)) {:name "Number of Blueberries Consumed Per Month"})))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [collection]
+                    Card       [card       {:collection_id (u/get-id collection)}]]
+      ((user->client :rasta) :put 403 (str "card/" (u/get-id card)) {:name "Number of Blueberries Consumed Per Month"}))))
 
 ;; Make sure that we can't change the `collection_id` of a Card if we don't have write permissions for the new
 ;; collection
 (expect
   "You don't have permissions to do that."
-  (tt/with-temp* [Collection [original-collection]
-                  Collection [new-collection]
-                  Card       [card                {:collection_id (u/get-id original-collection)}]]
-    (perms/grant-collection-readwrite-permissions! (perms-group/all-users) original-collection)
-    ((user->client :rasta) :put 403 (str "card/" (u/get-id card)) {:collection_id (u/get-id new-collection)})))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [original-collection]
+                    Collection [new-collection]
+                    Card       [card                {:collection_id (u/get-id original-collection)}]]
+      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) original-collection)
+      ((user->client :rasta) :put 403 (str "card/" (u/get-id card)) {:collection_id (u/get-id new-collection)}))))
 
 ;; Make sure that we can't change the `collection_id` of a Card if we don't have write permissions for the current
 ;; collection
 (expect
   "You don't have permissions to do that."
-  (tt/with-temp* [Collection [original-collection]
-                  Collection [new-collection]
-                  Card       [card                {:collection_id (u/get-id original-collection)}]]
-    (perms/grant-collection-readwrite-permissions! (perms-group/all-users) new-collection)
-    ((user->client :rasta) :put 403 (str "card/" (u/get-id card)) {:collection_id (u/get-id new-collection)})))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [original-collection]
+                    Collection [new-collection]
+                    Card       [card                {:collection_id (u/get-id original-collection)}]]
+      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) new-collection)
+      ((user->client :rasta) :put 403 (str "card/" (u/get-id card)) {:collection_id (u/get-id new-collection)}))))
 
 ;; But if we do have permissions for both, we should be able to change it.
 (expect
-  (tt/with-temp* [Collection [original-collection]
-                  Collection [new-collection]
-                  Card       [card                {:collection_id (u/get-id original-collection)}]]
-    (perms/grant-collection-readwrite-permissions! (perms-group/all-users) original-collection)
-    (perms/grant-collection-readwrite-permissions! (perms-group/all-users) new-collection)
-    ((user->client :rasta) :put 200 (str "card/" (u/get-id card)) {:collection_id (u/get-id new-collection)})
-    (= (db/select-one-field :collection_id Card :id (u/get-id card))
-       (u/get-id new-collection))))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [original-collection]
+                    Collection [new-collection]
+                    Card       [card                {:collection_id (u/get-id original-collection)}]]
+      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) original-collection)
+      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) new-collection)
+      ((user->client :rasta) :put 200 (str "card/" (u/get-id card)) {:collection_id (u/get-id new-collection)})
+      (= (db/select-one-field :collection_id Card :id (u/get-id card))
+         (u/get-id new-collection)))))
 
 
 ;;; ------------------------------ Bulk Collections Update (POST /api/card/collections) ------------------------------
@@ -1267,32 +1420,35 @@
 (expect
   {:response    "You don't have permissions to do that."
    :collections [nil nil]}
-  (tt/with-temp* [Collection [collection]
-                  Card       [card-1]
-                  Card       [card-2]]
-    (POST-card-collections! :rasta 403 collection [card-1 card-2])))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [collection]
+                    Card       [card-1]
+                    Card       [card-2]]
+      (POST-card-collections! :rasta 403 collection [card-1 card-2]))))
 
 ;; Check that we aren't allowed to move Cards if we don't have permissions for source collection
 (expect
   {:response    "You don't have permissions to do that."
    :collections ["Horseshoe Collection" "Horseshoe Collection"]}
-  (tt/with-temp* [Collection [collection {:name "Horseshoe Collection"}]
-                  Card       [card-1     {:collection_id (u/get-id collection)}]
-                  Card       [card-2     {:collection_id (u/get-id collection)}]]
-    (POST-card-collections! :rasta 403 nil [card-1 card-2])))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [collection {:name "Horseshoe Collection"}]
+                    Card       [card-1     {:collection_id (u/get-id collection)}]
+                    Card       [card-2     {:collection_id (u/get-id collection)}]]
+      (POST-card-collections! :rasta 403 nil [card-1 card-2]))))
 
 ;; Check that we aren't allowed to move Cards if we don't have permissions for the Card
 (expect
   {:response    "You don't have permissions to do that."
    :collections [nil nil]}
-  (tt/with-temp* [Collection [collection]
-                  Database   [database]
-                  Table      [table      {:db_id (u/get-id database)}]
-                  Card       [card-1     {:dataset_query (mbql-count-query (u/get-id database) (u/get-id table))}]
-                  Card       [card-2     {:dataset_query (mbql-count-query (u/get-id database) (u/get-id table))}]]
-    (perms/revoke-permissions! (perms-group/all-users) (u/get-id database))
-    (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
-    (POST-card-collections! :rasta 403 collection [card-1 card-2])))
+  (tu/with-non-admin-groups-no-root-collection-perms
+    (tt/with-temp* [Collection [collection]
+                    Database   [database]
+                    Table      [table      {:db_id (u/get-id database)}]
+                    Card       [card-1     {:dataset_query (mbql-count-query (u/get-id database) (u/get-id table))}]
+                    Card       [card-2     {:dataset_query (mbql-count-query (u/get-id database) (u/get-id table))}]]
+      (perms/revoke-permissions! (perms-group/all-users) (u/get-id database))
+      (perms/grant-collection-readwrite-permissions! (perms-group/all-users) collection)
+      (POST-card-collections! :rasta 403 collection [card-1 card-2]))))
 
 ;; Test that we can bulk move some Cards from one collection to another, while updating the collection position of the
 ;; old collection and the new collection

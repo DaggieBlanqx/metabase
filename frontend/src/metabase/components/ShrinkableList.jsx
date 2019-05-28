@@ -16,7 +16,7 @@ type State = {
   isShrunk: ?boolean,
 };
 
-@ExplicitSize
+@ExplicitSize()
 export default class ShrinkableList extends Component {
   props: Props;
   state: State = {
@@ -48,8 +48,8 @@ export default class ShrinkableList extends Component {
     const { isShrunk } = this.state;
     return (
       <div className={className}>
-        {items.map(
-          item => (isShrunk ? renderItemSmall(item) : renderItem(item)),
+        {items.map(item =>
+          isShrunk ? renderItemSmall(item) : renderItem(item),
         )}
       </div>
     );

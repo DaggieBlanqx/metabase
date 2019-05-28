@@ -4,7 +4,7 @@ import PropTypes from "prop-types";
 
 import { List } from "react-virtualized";
 import "react-virtualized/styles.css";
-import { t } from "c-3po";
+import { t } from "ttag";
 import ColumnarSelector from "metabase/components/ColumnarSelector.jsx";
 import Icon from "metabase/components/Icon.jsx";
 import PopoverWithTrigger from "metabase/components/PopoverWithTrigger.jsx";
@@ -36,8 +36,11 @@ class BrowserSelect extends Component {
     children: PropTypes.array.isRequired,
     onChange: PropTypes.func.isRequired,
     value: PropTypes.any,
+
     searchProp: PropTypes.string,
     searchCaseInsensitive: PropTypes.bool,
+    searchFuzzy: PropTypes.bool,
+
     isInitiallyOpen: PropTypes.bool,
     placeholder: PropTypes.string,
     // NOTE - @kdoh
@@ -54,10 +57,12 @@ class BrowserSelect extends Component {
   };
   static defaultProps = {
     className: "",
-    width: 320,
+    width: 300,
     height: 320,
     rowHeight: 40,
     multiple: false,
+    searchCaseInsensitive: true,
+    searchFuzzy: true,
   };
 
   isSelected(otherValue) {
@@ -80,6 +85,7 @@ class BrowserSelect extends Component {
       onChange,
       searchProp,
       searchCaseInsensitive,
+      searchFuzzy,
       isInitiallyOpen,
       placeholder,
       triggerElement,
@@ -98,15 +104,20 @@ class BrowserSelect extends Component {
       selectedNames = [placeholder];
     }
 
-    const { inputValue } = this.state;
+    let { inputValue } = this.state;
     let filter = () => true;
     if (searchProp && inputValue) {
       filter = child => {
         let childValue = String(child.props[searchProp] || "");
         if (!inputValue) {
           return false;
-        } else if (searchCaseInsensitive) {
-          return childValue.toLowerCase().startsWith(inputValue.toLowerCase());
+        }
+        if (searchCaseInsensitive) {
+          childValue = childValue.toLowerCase();
+          inputValue = inputValue.toLowerCase();
+        }
+        if (searchFuzzy) {
+          return childValue.indexOf(inputValue) >= 0;
         } else {
           return childValue.startsWith(inputValue);
         }
@@ -144,6 +155,11 @@ class BrowserSelect extends Component {
             </SelectButton>
           )
         }
+        pinInitialAttachment={
+          // keep the popover from jumping around one its been opened,
+          // this can happen when filtering items via search
+          true
+        }
         triggerClasses={className}
         verticalAttachments={["top", "bottom"]}
         isInitiallyOpen={isInitiallyOpen}
@@ -174,10 +190,10 @@ class BrowserSelect extends Component {
               const child = children[index];
 
               /*
-                             * for each child we need to add props based on
-                             * the parent's onClick and the current selection
-                             * status, so we use cloneElement here
-                            * */
+               * for each child we need to add props based on
+               * the parent's onClick and the current selection
+               * status, so we use cloneElement here
+               * */
               return (
                 <div key={key} style={style} onClick={e => e.stopPropagation()}>
                   {React.cloneElement(children[index], {
@@ -307,13 +323,15 @@ class LegacySelect extends Component {
 
     let selectedName = value
       ? optionNameFn(value)
-      : options && options.length > 0 ? placeholder : emptyPlaceholder;
+      : options && options.length > 0
+      ? placeholder
+      : emptyPlaceholder;
 
     let triggerElement = (
       <div
         className={cx(
           "flex align-center",
-          !value && (!values || values.length === 0) ? " text-light" : "",
+          !value && (!values || values.length === 0) ? " text-medium" : "",
         )}
       >
         {values && values.length !== 0 ? (

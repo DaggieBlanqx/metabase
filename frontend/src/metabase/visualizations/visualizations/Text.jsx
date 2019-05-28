@@ -7,7 +7,7 @@ import styles from "./Text.css";
 import Icon from "metabase/components/Icon.jsx";
 
 import cx from "classnames";
-import { t } from "c-3po";
+import { t } from "ttag";
 
 import type { VisualizationProps } from "metabase/meta/types/Visualization";
 
@@ -69,7 +69,7 @@ export default class Text extends Component {
       default: "",
     },
     "text.align_vertical": {
-      section: "Display",
+      section: t`Display`,
       title: t`Vertical Alignment`,
       widget: "select",
       props: {
@@ -82,7 +82,7 @@ export default class Text extends Component {
       default: "top",
     },
     "text.align_horizontal": {
-      section: "Display",
+      section: t`Display`,
       title: t`Horizontal Alignment`,
       widget: "select",
       props: {
@@ -95,7 +95,7 @@ export default class Text extends Component {
       default: "left",
     },
     "dashcard.background": {
-      section: "Display",
+      section: t`Display`,
       title: t`Show background`,
       dashboard: true,
       widget: "toggle",
@@ -164,7 +164,7 @@ export default class Text extends Component {
                 styles["text-card-textarea"],
               )}
               name="text"
-              placeholder={t`Write here, and use Markdown if you''d like`}
+              placeholder={t`Write here, and use Markdown if you'd like`}
               value={settings.text}
               onChange={e => this.handleTextChange(e.target.value)}
             />

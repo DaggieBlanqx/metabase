@@ -5,16 +5,18 @@
             [clojure.core.match :refer [match]]
             [clojure.tools.logging :as log]
             [medley.core :as m]
+            [metabase
+             [config :as config]
+             [util :as u]]
             [metabase.api.common :refer [*current-user-id*]]
             [metabase.models
              [interface :as i]
              [permissions-group :as group]
              [permissions-revision :as perms-revision :refer [PermissionsRevision]]]
-            [metabase.util :as u]
             [metabase.util
              [honeysql-extensions :as hx]
+             [i18n :as ui18n :refer [trs tru]]
              [schema :as su]]
-            [puppetlabs.i18n.core :refer [tru]]
             [schema.core :as s]
             [toucan
              [db :as db]
@@ -43,10 +45,10 @@
   [#"^/db/(\d+)/$"                                              ; permissions for the entire DB -- native and all schemas
    #"^/db/(\d+)/native/$"                                       ; permissions to create new native queries for the DB
    #"^/db/(\d+)/schema/$"                                       ; permissions for all schemas in the DB
-   #"^/db/(\d+)/schema/([^\\/]*)/$"                             ; permissions for a specific schema
-   #"^/db/(\d+)/schema/([^\\/]*)/table/(\d+)/$"                 ; FULL permissions for a specific table
-   #"^/db/(\d+)/schema/([^\\/]*)/table/(\d+)/read/$"            ; Permissions to fetch the Metadata for a specific Table
-   #"^/db/(\d+)/schema/([^\\/]*)/table/(\d+)/query/$"           ; Permissions to run any sort of query against a Table
+   #"^/db/(\d+)/schema/([^/]*)/$"                               ; permissions for a specific schema
+   #"^/db/(\d+)/schema/([^/]*)/table/(\d+)/$"                   ; FULL permissions for a specific table
+   #"^/db/(\d+)/schema/([^/]*)/table/(\d+)/read/$"              ; Permissions to fetch the Metadata for a specific Table
+   #"^/db/(\d+)/schema/([^/]*)/table/(\d+)/query/$"             ; Permissions to run any sort of query against a Table
    #"^/db/(\d+)/schema/([^\\/]*)/table/(\d+)/query/segmented/$" ; Permissions to run a query against a Table using GTAP
    #"^/collection/(\d+)/$"                                      ; readwrite permissions for a collection
    #"^/collection/(\d+)/read/$"                                 ; read permissions for a collection
@@ -77,7 +79,7 @@
   [{:keys [group_id]}]
   (when (and (= group_id (:id (group/admin)))
              (not *allow-admin-permissions-changes*))
-    (throw (ex-info (tru "You cannot create or revoke permissions for the 'Admin' group.")
+    (throw (ui18n/ex-info (tru "You cannot create or revoke permissions for the ''Admin'' group.")
              {:status-code 400}))))
 
 (defn- assert-valid-object
@@ -87,15 +89,27 @@
              (not (valid-object-path? object))
              (or (not= object "/")
                  (not *allow-root-entries*)))
-    (throw (ex-info (tru "Invalid permissions object path: ''{0}''." object)
+    (throw (ui18n/ex-info (tru "Invalid permissions object path: ''{0}''." object)
+             {:status-code 400}))))
+
+(defn- assert-valid-metabot-permissions
+  "MetaBot permissions can only be created for Collections, since MetaBot can only interact with objects that are always
+  in Collections (such as Cards)."
+  [{:keys [object group_id]}]
+  (when (and (= group_id (:id (group/metabot)))
+             (not (str/starts-with? object "/collection/")))
+    (throw (ui18n/ex-info (tru "MetaBot can only have Collection permissions.")
              {:status-code 400}))))
 
 (defn- assert-valid
   "Check to make sure this PERMISSIONS entry is something that's allowed to be saved (i.e. it has a valid `:object`
    path and it's not for the admin group)."
   [permissions]
-  (assert-not-admin-group permissions)
-  (assert-valid-object permissions))
+  (doseq [f [assert-not-admin-group
+             assert-valid-object
+             assert-valid-metabot-permissions]]
+    (f permissions)))
+
 
 ;;; ------------------------------------------------- Path Util Fns --------------------------------------------------
 
@@ -103,7 +117,9 @@
   (s/cond-pre su/Map su/IntGreaterThanZero))
 
 (s/defn object-path :- ObjectPath
-  "Return the permissions path for a Database, schema, or Table."
+  "Return the [readwrite] permissions path for a Database, schema, or Table. (At the time of this writing, DBs and
+  schemas don't have separate `read/` and write permissions; you either have 'data access' permissions for them, or
+  you don't. Tables, however, have separate read and write perms.)"
   ([database-or-id :- MapOrID]
    (str "/db/" (u/get-id database-or-id) "/"))
   ([database-or-id :- MapOrID, schema-name :- (s/maybe s/Str)]
@@ -123,7 +139,7 @@
   (str (object-path database-or-id) "schema/"))
 
 (s/defn collection-readwrite-path :- ObjectPath
-  "Return the permissions path for *readwrite* access for a COLLECTION-OR-ID."
+  "Return the permissions path for *readwrite* access for a `collection-or-id`."
   [collection-or-id :- MapOrID]
   (str "/collection/"
        (if (get collection-or-id :metabase.models.collection/is-root?)
@@ -132,7 +148,7 @@
        "/"))
 
 (s/defn collection-read-path :- ObjectPath
-  "Return the permissions path for *read* access for a COLLECTION-OR-ID."
+  "Return the permissions path for *read* access for a `collection-or-id`."
   [collection-or-id :- MapOrID]
   (str (collection-readwrite-path collection-or-id) "read/"))
 
@@ -248,6 +264,10 @@
 ;;; |                                                  GRAPH SCHEMA                                                  |
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
+;; TODO - there is so much stuff related to the perms graph I think we should really move it into a separate
+;; `metabase.models.permissions-graph.data` namespace or something and move the collections graph from
+;; `metabase.models.collection` to `metabase.models.permissions-graph.collection` (?)
+
 (def ^:private TablePermissionsGraph
   (s/enum :none :all))
 
@@ -343,12 +363,12 @@
 
 ;; TODO - if a DB has no tables, then it won't show up in the permissions graph!
 (s/defn graph :- PermissionsGraph
-  "Fetch a graph representing the current permissions status for every group and all permissioned databases."
+  "Fetch a graph representing the current permissions status for every Group and all permissioned databases."
   []
-  (let [permissions (db/select [Permissions :group_id :object])
+  (let [permissions (db/select [Permissions :group_id :object], :group_id [:not= (:id (group/metabot))])
         tables      (group-by :db_id (db/select ['Table :schema :id :db_id]))]
     {:revision (perms-revision/latest-id)
-     :groups   (into {} (for [group-id (db/select-ids 'PermissionsGroup)]
+     :groups   (into {} (for [group-id (db/select-ids 'PermissionsGroup, :id [:not= (:id (group/metabot))])]
                           (let [group-permissions-set (set (for [perms permissions
                                                                  :when (= (:group_id perms) group-id)]
                                                              (:object perms)))]
@@ -362,11 +382,26 @@
 
 ;;; --------------------------------------------------- Helper Fns ---------------------------------------------------
 
-;; TODO - why does this take a PATH when everything else takes PATH-COMPONENTS or IDs?
-(s/defn delete-related-permissions!
-  "Delete all permissions for `group-or-id` for ancestors or descendant objects of object with `path`.
-   You can optionally include `other-conditions`, which are anded into the filter clause, to further restrict what is
-   deleted."
+(s/defn ^:private delete-related-permissions!
+  "This is somewhat hard to explain, but I will do my best:
+
+  Delete all 'related' permissions for `group-or-id` (i.e., perms that grant you full or partial access to `path`).
+  This includes *both* ancestor and descendant paths. For example:
+
+  Suppose we asked this functions to delete related permssions for `/db/1/schema/PUBLIC/`. Dependning on the
+  permissions the group has, it could end up doing something like:
+
+    *  deleting `/db/1/` permissions (because the ancestor perms implicity grant you full perms for `schema/PUBLIC`)
+    *  deleting perms for `/db/1/schema/PUBLIC/table/2/` (because Table 2 is a descendant of `schema/PUBLIC`)
+
+  In short, it will delete any permissions that contain `/db/1/schema/` as a prefix, or that themeselves are prefixes
+  for `/db/1/schema/`.
+
+  You can optionally include `other-conditions`, which are anded into the filter clause, to further restrict what is
+  deleted.
+
+  NOTE: This function is meant for internal usage in this namespace only; use one of the other functions like
+  `revoke-permissions!` elsewhere instead of calling this directly."
   {:style/indent 2}
   [group-or-id :- (s/cond-pre su/Map su/IntGreaterThanZero), path :- ObjectPath, & other-conditions]
   (let [where {:where (apply list
@@ -381,12 +416,19 @@
       (db/delete! Permissions where))))
 
 (defn revoke-permissions!
-  "Revoke all permissions for GROUP-OR-ID to object with PATH-COMPONENTS, *including* related permissions."
+  "Revoke all permissions for `group-or-id` to object with `path-components`, *including* related permissions (i.e,
+  permissions that grant full or partial access to the object in question).
+
+
+    (revoke-permissions! my-group my-db)"
+  {:arglists '([group-id database-or-id]
+               [group-id database-or-id schema-name]
+               [group-id database-or-id schema-name table-or-id])}
   [group-or-id & path-components]
   (delete-related-permissions! group-or-id (apply object-path path-components)))
 
 (defn grant-permissions!
-  "Grant permissions to GROUP-OR-ID to an object."
+  "Grant permissions to `group-or-id` to an object."
   ([group-or-id db-id schema & more]
    (grant-permissions! group-or-id (apply object-path db-id schema more)))
   ([group-or-id path]
@@ -396,36 +438,41 @@
        :object   path)
      ;; on some occasions through weirdness we might accidentally try to insert a key that's already been inserted
      (catch Throwable e
-       (log/error (u/format-color 'red "Failed to grant permissions: %s" (.getMessage e)))))))
+       (log/error e (u/format-color 'red (tru "Failed to grant permissions")))
+       ;; if we're running tests, we're doing something wrong here if duplicate permissions are getting assigned,
+       ;; mostly likely because tests aren't properly cleaning up after themselves, and possibly causing other tests
+       ;; to pass when they shouldn't. Don't allow this during tests
+       (when config/is-test?
+         (throw e))))))
 
 (defn revoke-native-permissions!
-  "Revoke all native query permissions for GROUP-OR-ID to database with DATABASE-ID."
-  [group-or-id database-id]
-  (delete-related-permissions! group-or-id (adhoc-native-query-path database-id)))
+  "Revoke all native query permissions for `group-or-id` to database with `database-id`."
+  [group-or-id database-or-id]
+  (delete-related-permissions! group-or-id (adhoc-native-query-path database-or-id)))
 
 (defn grant-native-readwrite-permissions!
-  "Grant full readwrite permissions for GROUP-OR-ID to database with DATABASE-ID."
-  [group-or-id database-id]
-  (grant-permissions! group-or-id (adhoc-native-query-path database-id)))
+  "Grant full readwrite permissions for `group-or-id` to database with `database-id`."
+  [group-or-id database-or-id]
+  (grant-permissions! group-or-id (adhoc-native-query-path database-or-id)))
 
 (defn revoke-db-schema-permissions!
   "Remove all permissions entires for a DB and *any* child objects.
    This does *not* revoke native permissions; use `revoke-native-permssions!` to do that."
-  [group-or-id database-id]
+  [group-or-id database-or-id]
   ;; TODO - if permissions for this DB are DB root entries like `/db/1/` won't this end up removing our native perms?
-  (delete-related-permissions! group-or-id (object-path database-id)
-    [:not= :object (adhoc-native-query-path database-id)]))
+  (delete-related-permissions! group-or-id (object-path database-or-id)
+    [:not= :object (adhoc-native-query-path database-or-id)]))
 
-(s/defn grant-permissions-for-all-schemas!
+(defn grant-permissions-for-all-schemas!
   "Grant full permissions for all schemas belonging to this database.
    This does *not* grant native permissions; use `grant-native-readwrite-permissions!` to do that."
-  [group-id :- su/IntGreaterThanZero, database-id :- su/IntGreaterThanZero]
-  (grant-permissions! group-id (all-schemas-path database-id)))
+  [group-or-id database-or-id]
+  (grant-permissions! group-or-id (all-schemas-path database-or-id)))
 
-(s/defn grant-full-db-permissions!
+(defn grant-full-db-permissions!
   "Grant full access to the database, including all schemas and readwrite native access."
-  [group-id :- su/IntGreaterThanZero, database-id :- su/IntGreaterThanZero]
-  (grant-permissions! group-id (object-path database-id)))
+  [group-or-id database-or-id]
+  (grant-permissions! group-or-id (object-path database-or-id)))
 
 (defn- check-not-personal-collection-or-descendant
   "Check whether `collection-or-id` refers to a Personal Collection; if so, throw an Exception. This is done because we
@@ -524,8 +571,9 @@
    Return a 409 (Conflict) if the numbers don't match up."
   [old-graph new-graph]
   (when (not= (:revision old-graph) (:revision new-graph))
-    (throw (ex-info (str (tru "Looks like someone else edited the permissions and your data is out of date.")
-                         (tru "Please fetch new data and try again."))
+    (throw (ui18n/ex-info (str (tru "Looks like someone else edited the permissions and your data is out of date.")
+                               " "
+                               (tru "Please fetch new data and try again."))
              {:status-code 409}))))
 
 (defn- save-perms-revision!
@@ -534,20 +582,23 @@
   [current-revision old new]
   (when *current-user-id*
     (db/insert! PermissionsRevision
-      :id     (inc current-revision) ; manually specify ID here so if one was somehow inserted in the meantime in the fraction of a second
-      :before  old                   ; since we called `check-revision-numbers` the PK constraint will fail and the transaction will abort
+      ;; manually specify ID here so if one was somehow inserted in the meantime in the fraction of a second since we
+      ;; called `check-revision-numbers` the PK constraint will fail and the transaction will abort
+      :id     (inc current-revision)
+      :before  old
       :after   new
       :user_id *current-user-id*)))
 
 (defn log-permissions-changes
   "Log changes to the permissions graph."
   [old new]
-  (log/debug (format "Changing permissions: 🔏\nFROM:\n%s\nTO:\n%s\n"
-                     (u/pprint-to-str 'magenta old)
-                     (u/pprint-to-str 'blue new))))
+  (log/debug
+   (trs "Changing permissions")
+   "\n" (trs "FROM:") (u/pprint-to-str 'magenta old)
+   "\n" (trs "TO:")   (u/pprint-to-str 'blue    new)))
 
 (s/defn update-graph!
-  "Update the permissions graph, making any changes neccesary to make it match NEW-GRAPH.
+  "Update the permissions graph, making any changes necessary to make it match NEW-GRAPH.
    This should take in a graph that is exactly the same as the one obtained by `graph` with any changes made as
    needed. The graph is revisioned, so if it has been updated by a third party since you fetched it this function will
    fail and return a 409 (Conflict) exception. If nothing needs to be done, this function returns `nil`; otherwise it

@@ -1,5 +1,5 @@
 import React from "react";
-import { t } from "c-3po";
+import { t } from "ttag";
 import ChartSettingFieldPicker from "./ChartSettingFieldPicker.jsx";
 
 const ChartSettingFieldsPicker = ({
@@ -7,11 +7,14 @@ const ChartSettingFieldsPicker = ({
   options,
   onChange,
   addAnother,
+  ...props
 }) => (
   <div>
     {Array.isArray(value) ? (
       value.map((v, index) => (
         <ChartSettingFieldPicker
+          {...props}
+          className={index > 0 ? "mt1" : null}
           key={index}
           value={v}
           options={options}

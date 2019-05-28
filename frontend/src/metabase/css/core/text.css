@@ -140,6 +140,11 @@
   line-height: 1.5em;
 }
 
+.text-spaced,
+:local(.text-spaced) {
+  line-height: 1.5em;
+}
+
 .text-small {
   font-size: 0.875em;
 }
@@ -175,7 +180,7 @@
   border-radius: 2px;
   padding: 0.2em 0.4em;
   line-height: 1.4em;
-  white-space: pre;
+  white-space: pre-wrap;
 }
 
 .text-monospace,

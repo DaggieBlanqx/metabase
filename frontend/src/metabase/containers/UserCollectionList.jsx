@@ -1,6 +1,5 @@
 import React from "react";
 import { Box, Flex } from "grid-styled";
-import { t } from "c-3po";
 
 import * as Urls from "metabase/lib/urls";
 import colors from "metabase/lib/colors";
@@ -11,23 +10,23 @@ import { Grid, GridItem } from "metabase/components/Grid";
 import Link from "metabase/components/Link";
 import BrowserCrumbs from "metabase/components/BrowserCrumbs";
 
-import EntityListLoader from "metabase/entities/containers/EntityListLoader";
-
-const UserListLoader = ({ children, ...props }) => (
-  <EntityListLoader entityType="users" children={children} {...props} />
-);
+import User from "metabase/entities/users";
+import {
+  ROOT_COLLECTION,
+  PERSONAL_COLLECTIONS,
+} from "metabase/entities/collections";
 
 const UserCollectionList = () => (
   <Box px={4}>
     <Box py={2}>
       <BrowserCrumbs
         crumbs={[
-          { title: t`Our analytics`, to: Urls.collection() },
-          { title: t`Everyone else’s personal collections` },
+          { title: ROOT_COLLECTION.name, to: Urls.collection() },
+          { title: PERSONAL_COLLECTIONS.name },
         ]}
       />
     </Box>
-    <UserListLoader>
+    <User.ListLoader>
       {({ list }) => {
         return (
           <Box>
@@ -60,7 +59,7 @@ const UserCollectionList = () => (
           </Box>
         );
       }}
-    </UserListLoader>
+    </User.ListLoader>
   </Box>
 );
 

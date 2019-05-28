@@ -2,7 +2,7 @@
 
 import React, { Component } from "react";
 import PropTypes from "prop-types";
-import { t } from "c-3po";
+import { t } from "ttag";
 import CardRenderer from "./CardRenderer.jsx";
 import LegendHeader from "./LegendHeader.jsx";
 import { TitleLegendHeader } from "./TitleLegendHeader.jsx";
@@ -17,7 +17,7 @@ import {
 import { addCSSRule } from "metabase/lib/dom";
 import { formatValue } from "metabase/lib/formatting";
 
-import { getSettings } from "metabase/visualizations/lib/settings";
+import { getComputedSettingsForSeries } from "metabase/visualizations/lib/settings/visualization";
 
 import {
   MinRowsError,
@@ -82,7 +82,7 @@ export default class LineAreaBarChart extends Component {
 
   static minSize = { width: 4, height: 3 };
 
-  static isSensible(cols, rows) {
+  static isSensible({ cols, rows }) {
     return getChartTypeFromData(cols, rows, false) != null;
   }
 
@@ -99,15 +99,15 @@ export default class LineAreaBarChart extends Component {
     if (dimensions.length < 1 || metrics.length < 1) {
       throw new ChartSettingsError(
         t`Which fields do you want to use for the X and Y axes?`,
-        t`Data`,
+        { section: t`Data` },
         t`Choose fields`,
       );
     }
   }
 
   static seriesAreCompatible(initialSeries, newSeries) {
-    let initialSettings = getSettings([initialSeries]);
-    let newSettings = getSettings([newSeries]);
+    let initialSettings = getComputedSettingsForSeries([initialSeries]);
+    let newSettings = getComputedSettingsForSeries([newSeries]);
 
     let initialDimensions = getColumnsFromNames(
       initialSeries.data.cols,
@@ -180,7 +180,9 @@ export default class LineAreaBarChart extends Component {
       let axisClasses =
         hovered.axisIndex === 0
           ? "mute-yr"
-          : hovered.axisIndex === 1 ? "mute-yl" : null;
+          : hovered.axisIndex === 1
+          ? "mute-yl"
+          : null;
       return seriesClasses.concat(axisClasses);
     } else {
       return null;
@@ -305,7 +307,7 @@ function transformSingleSeries(s, series, seriesIndex) {
   }
 
   const { cols, rows } = data;
-  const settings = getSettings([s]);
+  const settings = getComputedSettingsForSeries([s]);
 
   const dimensions = settings["graph.dimensions"].filter(d => d != null);
   const metrics = settings["graph.metrics"].filter(d => d != null);
@@ -378,40 +380,47 @@ function transformSingleSeries(s, series, seriesIndex) {
         ],
       },
     }));
-  }
+  } else {
+    // dimensions.length <= 1
+    const dimensionColumnIndex = dimensionColumnIndexes[0];
+    return metricColumnIndexes.map(metricColumnIndex => {
+      const col = cols[metricColumnIndex];
+      const rowColumnIndexes = [dimensionColumnIndex].concat(
+        metricColumnIndex,
+        extraColumnIndexes,
+      );
+      const name = [
+        // show series title if it's multiseries
+        series.length > 1 && card.name,
+        // show column name if there are multiple metrics or sigle series
+        (metricColumnIndexes.length > 1 || series.length === 1) &&
+          col &&
+          getFriendlyName(col),
+      ]
+        .filter(n => n)
+        .join(": ");
 
-  // dimensions.length <= 1
-  const dimensionColumnIndex = dimensionColumnIndexes[0];
-  return metricColumnIndexes.map(metricColumnIndex => {
-    const col = cols[metricColumnIndex];
-    const rowColumnIndexes = [dimensionColumnIndex].concat(
-      metricColumnIndex,
-      extraColumnIndexes,
-    );
-    return {
-      card: {
-        ...card,
-        name: [
-          // show series title if it's multiseries
-          series.length > 1 && card.name,
-          // show column name if there are multiple metrics
-          metricColumnIndexes.length > 1 && getFriendlyName(col),
-        ]
-          .filter(n => n)
-          .join(": "),
-        _transformed: true,
-        _seriesIndex: seriesIndex,
-      },
-      data: {
-        rows: rows.map((row, rowIndex) => {
-          const newRow = rowColumnIndexes.map(i => row[i]);
-          // $FlowFixMe: _origin not typed
-          newRow._origin = { seriesIndex, rowIndex, row, cols };
-          return newRow;
-        }),
-        cols: rowColumnIndexes.map(i => cols[i]),
-        _rawCols: cols,
-      },
-    };
-  });
+      return {
+        card: {
+          ...card,
+          name: name,
+          _transformed: true,
+          _seriesIndex: seriesIndex,
+          // use underlying column name as the seriesKey since it should be unique
+          // EXCEPT for dashboard multiseries, so check seriesIndex == 0
+          _seriesKey: seriesIndex === 0 && col ? col.name : name,
+        },
+        data: {
+          rows: rows.map((row, rowIndex) => {
+            const newRow = rowColumnIndexes.map(i => row[i]);
+            // $FlowFixMe: _origin not typed
+            newRow._origin = { seriesIndex, rowIndex, row, cols };
+            return newRow;
+          }),
+          cols: rowColumnIndexes.map(i => cols[i]),
+          _rawCols: cols,
+        },
+      };
+    });
+  }
 }

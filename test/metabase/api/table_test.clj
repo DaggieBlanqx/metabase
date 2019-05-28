@@ -1,29 +1,28 @@
 (ns metabase.api.table-test
   "Tests for /api/table endpoints."
   (:require [clojure.walk :as walk]
-            [expectations :refer :all]
+            [expectations :refer [expect]]
             [medley.core :as m]
             [metabase
-             [driver :as driver]
              [http-client :as http]
-             [middleware :as middleware]
              [query-processor-test :as qpt]
              [sync :as sync]
              [util :as u]]
             [metabase.api.table :as table-api]
+            [metabase.driver.util :as driver.u]
+            [metabase.middleware.util :as middleware.u]
             [metabase.models
              [card :refer [Card]]
              [database :as database :refer [Database]]
              [field :refer [Field]]
+             [field-values :refer [FieldValues]]
              [permissions :as perms]
              [permissions-group :as perms-group]
              [table :as table :refer [Table]]]
-            [metabase.query-processor.util :as qputil]
             [metabase.test
              [data :as data]
              [util :as tu :refer [match-$]]]
             [metabase.test.data
-             [dataset-definitions :as defs]
              [datasets :as datasets]
              [users :refer [user->client]]]
             [metabase.test.mock.util :as mutil]
@@ -37,8 +36,8 @@
 ;; We assume that all endpoints for a given context are enforced by the same middleware, so we don't run the same
 ;; authentication test on every single individual endpoint
 
-(expect (get middleware/response-unauthentic :body) (http/client :get 401 "table"))
-(expect (get middleware/response-unauthentic :body) (http/client :get 401 (format "table/%d" (data/id :users))))
+(expect (get middleware.u/response-unauthentic :body) (http/client :get 401 "table"))
+(expect (get middleware.u/response-unauthentic :body) (http/client :get 401 (format "table/%d" (data/id :users))))
 
 
 ;; Helper Fns
@@ -56,7 +55,7 @@
      :description                 nil
      :caveats                     nil
      :points_of_interest          nil
-     :features                    (mapv name (driver/features (driver/engine->driver :h2)))
+     :features                    (mapv name (driver.u/features :h2))
      :cache_field_values_schedule "0 50 0 * * ? *"
      :metadata_sync_schedule      "0 50 * * * ? *"
      :options                     nil
@@ -90,7 +89,8 @@
    :dimensions               []
    :dimension_options        []
    :has_field_values         nil
-   :default_dimension_option nil})
+   :default_dimension_option nil
+   :settings                 nil})
 
 (defn- field-details [field]
   (merge
@@ -100,7 +100,6 @@
       :id                  $
       :created_at          $
       :fk_target_field_id  $
-      :raw_column_id       $
       :last_analyzed       $
       :fingerprint         $
       :fingerprint_version $})))
@@ -151,7 +150,6 @@
             :pk_field     (#'table/pk-field-id $$)
             :id           (data/id :venues)
             :db_id        (data/id)
-            :raw_table_id $
             :created_at   $
             :fields_hash  $}))
   ((user->client :rasta) :get 200 (format "table/%d" (data/id :venues))))
@@ -161,12 +159,13 @@
                       Table    [{table-id :id}    {:db_id database-id}]]
   "You don't have permissions to do that."
   (do
-    (perms/delete-related-permissions! (perms-group/all-users) (perms/object-path database-id))
+    (perms/revoke-permissions! (perms-group/all-users) database-id)
     ((user->client :rasta) :get 403 (str "table/" table-id))))
 
 (defn- default-dimension-options []
   (->> #'table-api/dimension-options-for-response
        var-get
+       (m/map-vals #(update % :name str))
        walk/keywordize-keys))
 
 (defn- query-metadata-defaults []
@@ -201,28 +200,9 @@
             :rows         nil
             :updated_at   $
             :id           (data/id :categories)
-            :raw_table_id $
             :created_at   $
             :fields_hash  $}))
   ((user->client :rasta) :get 200 (format "table/%d/query_metadata" (data/id :categories))))
-
-
-(def ^:private user-last-login-date-strs
-  "In an effort to be really annoying, the date strings returned by the API are different on Circle than they are
-   locally. Generate strings like '2014-01-01' at runtime so we get matching values."
-  (let [format-inst (fn [^java.util.Date inst]
-                      (format "%d-%02d-%02d"
-                              (+ (.getYear inst) 1900)
-                              (+ (.getMonth inst) 1)
-                              (.getDate inst)))]
-    (->> (defs/field-values defs/test-data-map "users" "last_login")
-         (map format-inst)
-         set
-         sort
-         vec)))
-
-(def ^:private user-full-names
-  (defs/field-values defs/test-data-map "users" "name"))
 
 ;;; GET api/table/:id/query_metadata?include_sensitive_fields
 ;; Make sure that getting the User table *does* include info about the password field, but not actual values
@@ -276,7 +256,6 @@
             :rows         nil
             :updated_at   $
             :id           (data/id :users)
-            :raw_table_id $
             :created_at   $
             :fields_hash  $}))
   ((user->client :rasta) :get 200 (format "table/%d/query_metadata?include_sensitive_fields=true" (data/id :users))))
@@ -318,7 +297,6 @@
             :rows         nil
             :updated_at   $
             :id           (data/id :users)
-            :raw_table_id $
             :created_at   $
             :fields_hash  $}))
   ((user->client :rasta) :get 200 (format "table/%d/query_metadata" (data/id :users))))
@@ -358,7 +336,6 @@
             :display_name    "Userz"
             :pk_field        (#'table/pk-field-id $$)
             :id              $
-            :raw_table_id    $
             :created_at      $
             :fields_hash     $}))
   (do ((user->client :crowberto) :put 200 (format "table/%d" (:id table)) {:display_name    "Userz"
@@ -414,7 +391,6 @@
                                                           :rows         nil
                                                           :updated_at   $
                                                           :id           $
-                                                          :raw_table_id $
                                                           :created_at   $
                                                           :fields_hash  $}))))
       :destination    (-> (fk-field-details users-id-field)
@@ -434,7 +410,6 @@
                                                           :rows         nil
                                                           :updated_at   $
                                                           :id           $
-                                                          :raw_table_id $
                                                           :created_at   $
                                                           :fields_hash  $}))))}])
   ((user->client :rasta) :get 200 (format "table/%d/fks" (data/id :users))))
@@ -499,7 +474,12 @@
     ;; run the Card which will populate its result_metadata column
     ((user->client :crowberto) :post 200 (format "card/%d/query" (u/get-id card)))
     ;; Now fetch the metadata for this "table"
-    (tu/round-all-decimals 2 ((user->client :crowberto) :get 200 (format "table/card__%d/query_metadata" (u/get-id card))))))
+    (->> card
+         u/get-id
+         (format "table/card__%d/query_metadata")
+         ((user->client :crowberto) :get 200)
+         (tu/round-fingerprint-cols [:fields])
+         (tu/round-all-decimals 2))))
 
 ;; Test date dimensions being included with a nested query
 (tt/expect-with-temp [Card [card {:name          "Users"
@@ -522,7 +502,8 @@
                           :special_type             "type/Name"
                           :default_dimension_option nil
                           :dimension_options        []
-                          :fingerprint              {:global {:distinct-count 15},
+                          :fingerprint              {:global {:distinct-count 15
+                                                              :nil%           0.0},
                                                      :type   {:type/Text {:percent-json  0.0, :percent-url    0.0,
                                                                           :percent-email 0.0, :average-length 13.27}}}}
                          {:name                     "LAST_LOGIN"
@@ -533,14 +514,20 @@
                           :special_type             nil
                           :default_dimension_option (var-get #'table-api/date-default-index)
                           :dimension_options        (var-get #'table-api/datetime-dimension-indexes)
-                          :fingerprint              {:global {:distinct-count 15},
+                          :fingerprint              {:global {:distinct-count 15
+                                                              :nil%           0.0},
                                                      :type   {:type/DateTime {:earliest "2014-01-01T08:30:00.000Z",
                                                                               :latest   "2014-12-05T15:15:00.000Z"}}}}]})
   (do
     ;; run the Card which will populate its result_metadata column
     ((user->client :crowberto) :post 200 (format "card/%d/query" (u/get-id card)))
     ;; Now fetch the metadata for this "table"
-    (tu/round-all-decimals 2 ((user->client :crowberto) :get 200 (format "table/card__%d/query_metadata" (u/get-id card))))))
+    (->> card
+         u/get-id
+         (format "table/card__%d/query_metadata")
+         ((user->client :crowberto) :get 200)
+         (tu/round-fingerprint-cols [:fields])
+         (tu/round-all-decimals 2))))
 
 
 ;; make sure GET /api/table/:id/fks just returns nothing for 'virtual' tables
@@ -684,7 +671,7 @@
       (dimension-options-for-field response "timestamp"))))
 
 ;; Datetime binning options should showup whether the backend supports binning of numeric values or not
-(datasets/expect-with-engines #{:druid}
+(datasets/expect-with-drivers #{:druid}
   (var-get #'table-api/datetime-dimension-indexes)
   (tqpt/with-flattened-dbdef
     (let [response ((user->client :rasta) :get 200 (format "table/%d/query_metadata" (data/id :checkins)))]
@@ -697,7 +684,7 @@
 
 (qpt/expect-with-non-timeseries-dbs-except #{:oracle :mongo :redshift :sparksql}
   []
-  (data/with-db (data/get-or-create-database! defs/test-data-with-time)
+  (data/dataset test-data-with-time
     (let [response ((user->client :rasta) :get 200 (format "table/%d/query_metadata" (data/id :users)))]
       (dimension-options-for-field response "last_login_time"))))
 
@@ -707,7 +694,7 @@
   (-> ((user->client :crowberto) :get 200 (format "table/%s/related" (data/id :venues))) keys set))
 
 ;; Nested queries with a fingerprint should have dimension options for binning
-(datasets/expect-with-engines (qpt/non-timeseries-engines-with-feature :binning :nested-queries)
+(datasets/expect-with-drivers (qpt/non-timeseries-drivers-with-feature :binning :nested-queries)
   (repeat 2 (var-get #'table-api/coordinate-dimension-indexes))
   (tt/with-temp Card [card {:database_id   (data/id)
                             :dataset_query {:database (data/id)
@@ -720,7 +707,7 @@
            ["latitude" "longitude"]))))
 
 ;; Nested queries missing a fingerprint should not show binning-options
-(datasets/expect-with-engines (qpt/non-timeseries-engines-with-feature :binning :nested-queries)
+(datasets/expect-with-drivers (qpt/non-timeseries-drivers-with-feature :binning :nested-queries)
   [nil nil]
   (tt/with-temp Card [card {:database_id   (data/id)
                             :dataset_query {:database (data/id)
@@ -731,3 +718,28 @@
     (let [response ((user->client :crowberto) :get 200 (format "table/card__%d/query_metadata" (u/get-id card)))]
       (map #(dimension-options-for-field response %)
            ["latitude" "longitude"]))))
+
+;; test POST /api/table/:id/discard_values
+(defn- discard-values [user expected-status-code]
+  (tt/with-temp* [Table       [table        {}]
+                  Field       [field        {:table_id (u/get-id table)}]
+                  FieldValues [field-values {:field_id (u/get-id field), :values ["A" "B" "C"]}]]
+    {:response ((user->client user) :post expected-status-code (format "table/%d/discard_values" (u/get-id table)))
+     :deleted? (not (db/exists? FieldValues :id (u/get-id field-values)))}))
+
+;; Non-admin toucans should not be allowed to discard values
+(expect
+  {:response "You don't have permissions to do that."
+   :deleted? false}
+  (discard-values :rasta 403))
+
+;; Admins should be able to successfuly delete them
+(expect
+  {:response {:status "success"}
+   :deleted? true}
+  (discard-values :crowberto 200))
+
+;; For tables that don't exist, we should return a 404
+(expect
+  "Not found."
+  ((user->client :crowberto) :post 404 (format "table/%d/discard_values" Integer/MAX_VALUE)))

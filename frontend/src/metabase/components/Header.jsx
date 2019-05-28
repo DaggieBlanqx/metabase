@@ -6,7 +6,7 @@ import InputBlurChange from "metabase/components/InputBlurChange.jsx";
 import HeaderModal from "metabase/components/HeaderModal.jsx";
 import TitleAndDescription from "metabase/components/TitleAndDescription.jsx";
 import EditBar from "metabase/components/EditBar.jsx";
-import { t } from "c-3po";
+import { t } from "ttag";
 import { getScrollY } from "metabase/lib/dom";
 
 export default class Header extends Component {
@@ -30,7 +30,7 @@ export default class Header extends Component {
     this.updateHeaderHeight();
   }
 
-  componentWillUpdate() {
+  componentDidUpdate() {
     const modalIsOpen = !!this.props.headerModalMessage;
     if (modalIsOpen) {
       this.updateHeaderHeight();
@@ -156,11 +156,14 @@ export default class Header extends Component {
           }
           ref="header"
         >
-          <div className="Entity py3 mb1">
-            {titleAndDescription}
+          <div className="Entity py3">
+            <span className="inline-block mb1">{titleAndDescription}</span>
             {attribution}
-            {!this.props.isEditingInfo && (
-              <CollectionBadge collectionId={item.collection_id} />
+            {this.props.showBadge && (
+              <CollectionBadge
+                collectionId={item.collection_id}
+                analyticsContext={this.props.analyticsContext}
+              />
             )}
           </div>
 

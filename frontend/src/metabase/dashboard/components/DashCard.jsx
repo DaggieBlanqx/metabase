@@ -1,7 +1,7 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
 import ReactDOM from "react-dom";
-import { t } from "c-3po";
+import { t } from "ttag";
 import visualizations, { getVisualizationRaw } from "metabase/visualizations";
 import Visualization, {
   ERROR_MESSAGE_GENERIC,
@@ -10,7 +10,7 @@ import Visualization, {
 import QueryDownloadWidget from "metabase/query_builder/components/QueryDownloadWidget";
 
 import ModalWithTrigger from "metabase/components/ModalWithTrigger.jsx";
-import ChartSettings from "metabase/visualizations/components/ChartSettings.jsx";
+import { ChartSettingsWithState } from "metabase/visualizations/components/ChartSettings.jsx";
 
 import Icon from "metabase/components/Icon.jsx";
 
@@ -48,7 +48,10 @@ export default class DashCard extends Component {
 
     // HACK: way to scroll to a newly added card
     if (dashcard.justAdded) {
-      ReactDOM.findDOMNode(this).scrollIntoView();
+      const element = ReactDOM.findDOMNode(this);
+      if (element && element.scrollIntoView) {
+        element.scrollIntoView({ block: "nearest" });
+      }
       markNewCardSeen(dashcard.id);
     }
   }
@@ -64,6 +67,7 @@ export default class DashCard extends Component {
       slowCards,
       isEditing,
       isEditingParameter,
+      isFullscreen,
       onAddSeries,
       onRemove,
       navigateToNewCardFromDashboard,
@@ -145,6 +149,7 @@ export default class DashCard extends Component {
           expectedDuration={expectedDuration}
           rawSeries={series}
           showTitle
+          isFullscreen={isFullscreen}
           isDashboard
           isEditing={isEditing}
           gridSize={
@@ -236,7 +241,7 @@ const ChartSettingsButton = ({ series, onReplaceAllVisualizationSettings }) => (
     }
     triggerClasses="text-light text-medium-hover cursor-pointer flex align-center flex-no-shrink mr1"
   >
-    <ChartSettings
+    <ChartSettingsWithState
       series={series}
       onChange={onReplaceAllVisualizationSettings}
       isDashboard
